@@ -1,5 +1,7 @@
 # Provider Usage Dashboard
 
+![Screenshot](assets/screenshot.svg)
+
 LAN-local dashboard for AI provider quota and usage windows.
 
 It normalizes usage snapshots from provider APIs and OAuth credential stores into a small HTML dashboard and `/api/usage` JSON endpoint. It is designed for local/private deployment, not public internet exposure.
@@ -64,3 +66,11 @@ Use `provider-usage-dashboard.service` as a template. Edit `WorkingDirectory` an
 ## Security model
 
 This is LAN-trust tooling. It reads/refreshes local OAuth credentials and should stay behind localhost, VPN, or a trusted LAN.
+
+## Install
+
+See [docs/INSTALL.md](docs/INSTALL.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

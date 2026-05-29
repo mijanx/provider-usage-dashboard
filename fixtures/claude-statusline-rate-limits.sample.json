@@ -1,0 +1,18 @@
+{
+  "plan": "Max 5x",
+  "source": "claude-code-statusline",
+  "windows": [
+    {
+      "label": "5h",
+      "percent_remaining": 72,
+      "remaining_text": "sample only",
+      "reset_text": "resets in 2h"
+    },
+    {
+      "label": "weekly",
+      "percent_remaining": 48,
+      "remaining_text": "sample only",
+      "reset_text": "resets in 3d"
+    }
+  ]
+}

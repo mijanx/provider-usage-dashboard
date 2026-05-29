@@ -1,0 +1,41 @@
+{
+  "credential_pool": {
+    "minimax": [
+      {
+        "id": "demo-minimax",
+        "api_key": "REPLACE_ME",
+        "priority": 1
+      }
+    ],
+    "zai": [
+      {
+        "id": "demo-zai",
+        "api_key": "REPLACE_ME",
+        "priority": 1
+      }
+    ],
+    "openai-codex": [
+      {
+        "id": "demo-codex",
+        "access_token": "REPLACE_ME",
+        "refresh_token": "REPLACE_ME",
+        "priority": 1
+      }
+    ],
+    "anthropic": [
+      {
+        "id": "demo-claude",
+        "access_token": "REPLACE_ME",
+        "refresh_token": "REPLACE_ME",
+        "priority": 1
+      }
+    ],
+    "xai-oauth": [
+      {
+        "id": "demo-xai",
+        "access_token": "REPLACE_ME",
+        "priority": 1
+      }
+    ]
+  }
+}
