@@ -1,0 +1,8 @@
+[project]
+name = "provider-usage-dashboard"
+version = "0.1.0"
+description = "LAN-local dashboard for AI provider quota and usage windows"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

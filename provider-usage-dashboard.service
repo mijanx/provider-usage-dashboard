@@ -1,0 +1,15 @@
+[Unit]
+Description=Provider Usage Dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/AI-Tools/provider-usage-dashboard
+Environment=HOME=%h
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 %h/projects/AI-Tools/provider-usage-dashboard/app.py --config %h/projects/AI-Tools/provider-usage-dashboard/config.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

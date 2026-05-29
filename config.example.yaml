@@ -1,0 +1,11 @@
+# Copy to config.yaml and adjust for your machine.
+host: 127.0.0.1
+port: 8768
+# Hermes-style auth pool. Supports ~ and environment variables.
+auth_path: ~/.hermes/profiles/dev/auth.json
+claude_credentials_path: ~/.claude/.credentials.json
+claude_statusline_path: ~/.claude/statusline-rate-limits.json
+kimi_credentials_path: ~/.kimi/credentials/kimi-code.json
+cache_path: ./cache/usage-cache.json
+timeout_seconds: 15
+refresh_seconds: 60
