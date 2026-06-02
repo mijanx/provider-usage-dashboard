@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -39,6 +40,75 @@ port: 9876
                     os.environ.pop("PUD_TMP", None)
                 else:
                     os.environ["PUD_TMP"] = old
+
+    def test_require_access_token_can_resolve_env_sourced_credentials(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg = app.AppConfig(auth_path=str(Path(td) / "auth.json"))
+            service = app.UsageService(cfg)
+            env_old = os.environ.get("PUD_TEST_TOKEN")
+            os.environ.pop("PUD_TEST_TOKEN", None)
+            Path(td, ".env").write_text("PUD_TEST_TOKEN=from-dotenv\n", encoding="utf-8")
+            try:
+                token = service._require_access_token({"source": "env:PUD_TEST_TOKEN"}, "minimax")
+                self.assertEqual(token, "from-dotenv")
+            finally:
+                if env_old is None:
+                    os.environ.pop("PUD_TEST_TOKEN", None)
+                else:
+                    os.environ["PUD_TEST_TOKEN"] = env_old
+
+    def test_minimax_probe_accepts_percent_only_rows(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "minimax": [
+                                {"id": "minimax-env", "source": "env:PUD_MINIMAX_TEST_TOKEN"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cfg = app.AppConfig(auth_path=str(auth_path), cache_path=str(Path(td) / "cache.json"))
+            service = app.UsageService(cfg)
+            env_old = os.environ.get("PUD_MINIMAX_TEST_TOKEN")
+            os.environ["PUD_MINIMAX_TEST_TOKEN"] = "token"
+            old_http_json = app.http_json
+            seen = {}
+
+            def fake_http_json(url, **kwargs):
+                seen["url"] = url
+                return {
+                    "base_resp": {"status_code": 0},
+                    "model_remains": [
+                        {
+                            "model_name": "general",
+                            "current_interval_remaining_percent": 42.5,
+                            "current_interval_status": "available",
+                            "current_weekly_remaining_percent": 80,
+                            "current_weekly_status": "available",
+                        }
+                    ],
+                }
+
+            try:
+                app.http_json = fake_http_json
+                result = service.probe_minimax()
+            finally:
+                app.http_json = old_http_json
+                if env_old is None:
+                    os.environ.pop("PUD_MINIMAX_TEST_TOKEN", None)
+                else:
+                    os.environ["PUD_MINIMAX_TEST_TOKEN"] = env_old
+
+            self.assertEqual(seen["url"], "https://api.minimax.io/v1/token_plan/remains")
+            self.assertEqual(result.status, "ok")
+            self.assertEqual(result.windows[0].remaining_text, "42.5% left")
+            self.assertEqual(result.windows[-1].label, "weekly")
+            self.assertEqual(result.windows[-1].remaining_text, "80.0% left")
 
 
 if __name__ == "__main__":

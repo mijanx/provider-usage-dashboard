@@ -35,7 +35,7 @@ CLAUDE_SCOPES = "user:profile user:inference user:sessions:claude_code"
 KIMI_USAGE_URL = "https://api.kimi.com/coding/v1/usages"
 KIMI_OAUTH_REFRESH_URL = "https://auth.kimi.com/api/oauth/token"
 KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098"
-MINIMAX_USAGE_URL = "https://api.minimax.io/v1/coding_plan/remains"
+MINIMAX_USAGE_URL = "https://api.minimax.io/v1/token_plan/remains"
 ZAI_LIMIT_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
 ZAI_MODEL_USAGE_URL = "https://api.z.ai/api/monitor/usage/model-usage?timeRange=7d"
 XAI_ME_URL = "https://api.x.ai/v1/me"
@@ -265,42 +265,80 @@ class UsageService:
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
             timeout=self.config.timeout_seconds,
         )
+        base_resp = payload.get("base_resp") if isinstance(payload, dict) else None
+        if isinstance(base_resp, dict) and as_int(base_resp.get("status_code")) not in (None, 0):
+            raise ProbeError(f"MiniMax usage API returned {base_resp.get('status_code')}: {base_resp.get('status_msg')}")
         rows = payload.get("model_remains") or payload.get("modelRemains") or []
         if not isinstance(rows, list) or not rows:
             raise ProbeError("MiniMax returned no model quota rows")
         windows: list[Window] = []
-        weekly_candidates: list[tuple[str, int, int, str | None, str | None]] = []
+        weekly_candidates: list[Window] = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
             label = str(row.get("model_name") or row.get("modelName") or "model")
             total = as_int(row.get("current_interval_total_count") or row.get("currentIntervalTotalCount"))
             remaining_count = as_int(row.get("current_interval_usage_count") or row.get("currentIntervalUsageCount"))
-            if total is None or remaining_count is None or total <= 0:
-                continue
-            remaining_count = max(0, min(total, remaining_count))
-            used_count = total - remaining_count
-            percent_remaining = round(remaining_count / total * 100, 1)
+            percent_remaining = as_float(row.get("current_interval_remaining_percent") or row.get("currentIntervalRemainingPercent"))
             reset_at = from_epoch_ms(row.get("end_time") or row.get("endTime"))
+            meta = {"status": row.get("current_interval_status") or row.get("currentIntervalStatus")}
+            used_count = None
+            if total is not None and remaining_count is not None and total > 0:
+                remaining_count = max(0, min(total, remaining_count))
+                used_count = total - remaining_count
+                percent_remaining = round(remaining_count / total * 100, 1)
+                remaining_text = f"{remaining_count}/{total} requests left"
+                meta.update({"used_count": used_count, "total": total})
+            elif percent_remaining is not None:
+                percent_remaining = round(max(0.0, min(100.0, percent_remaining)), 1)
+                remaining_text = f"{percent_remaining:.1f}% left"
+            else:
+                continue
             windows.append(
                 Window(
                     label=label,
                     percent_remaining=percent_remaining,
                     percent_used=round(100 - percent_remaining, 1),
-                    remaining_text=f"{remaining_count}/{total} requests left",
+                    remaining_text=remaining_text,
                     reset_at=reset_at,
                     reset_text=relative_reset_text(reset_at),
-                    meta={"used_count": used_count, "total": total},
+                    meta=meta,
                 )
             )
+
             weekly_total = as_int(row.get("current_weekly_total_count") or row.get("currentWeeklyTotalCount"))
             weekly_remaining = as_int(row.get("current_weekly_usage_count") or row.get("currentWeeklyUsageCount"))
-            if weekly_total is None or weekly_remaining is None or weekly_total <= 0:
-                continue
-            weekly_remaining = max(0, min(weekly_total, weekly_remaining))
+            weekly_percent = as_float(row.get("current_weekly_remaining_percent") or row.get("currentWeeklyRemainingPercent"))
             weekly_start = from_epoch_ms(row.get("weekly_start_time") or row.get("weeklyStartTime"))
             weekly_end = from_epoch_ms(row.get("weekly_end_time") or row.get("weeklyEndTime"))
-            weekly_candidates.append((label, weekly_total, weekly_remaining, weekly_start, weekly_end))
+            weekly_meta = {
+                "source_model": label,
+                "status": row.get("current_weekly_status") or row.get("currentWeeklyStatus"),
+                "window_start": weekly_start,
+                "window_end": weekly_end,
+            }
+            if weekly_total is not None and weekly_remaining is not None and weekly_total > 0:
+                weekly_remaining = max(0, min(weekly_total, weekly_remaining))
+                weekly_used = weekly_total - weekly_remaining
+                weekly_percent = round(weekly_remaining / weekly_total * 100, 1)
+                weekly_text = f"{weekly_remaining}/{weekly_total} requests left"
+                weekly_meta.update({"used_count": weekly_used, "total": weekly_total})
+            elif weekly_percent is not None:
+                weekly_percent = round(max(0.0, min(100.0, weekly_percent)), 1)
+                weekly_text = f"{weekly_percent:.1f}% left"
+            else:
+                continue
+            weekly_candidates.append(
+                Window(
+                    label="weekly",
+                    percent_remaining=weekly_percent,
+                    percent_used=round(100 - weekly_percent, 1),
+                    remaining_text=weekly_text,
+                    reset_at=weekly_end,
+                    reset_text=relative_reset_text(weekly_end),
+                    meta=weekly_meta,
+                )
+            )
         collapsed_windows: list[Window] = []
         dedupe_map: dict[tuple[Any, ...], Window] = {}
         for window in windows:
@@ -312,6 +350,7 @@ class UsageService:
             dedupe_key = (
                 meta.get("used_count"),
                 meta.get("total"),
+                window.percent_remaining,
                 window.reset_at,
                 window.remaining_text,
             )
@@ -324,26 +363,13 @@ class UsageService:
             aliases.append(window.label)
             existing.meta = {**(existing.meta or {}), "aliases": aliases}
         windows = collapsed_windows
-        preferred = next((item for item in weekly_candidates if item[0] == "MiniMax-M*"), None)
+        preferred = next((item for item in weekly_candidates if (item.meta or {}).get("source_model") in {"general", "MiniMax-M*"}), None)
         if preferred is None:
-            preferred = next((item for item in weekly_candidates if "coding-plan" in item[0]), None)
+            preferred = next((item for item in weekly_candidates if "coding-plan" in str((item.meta or {}).get("source_model"))), None)
         if preferred is None and weekly_candidates:
             preferred = weekly_candidates[0]
         if preferred is not None:
-            _, weekly_total, weekly_remaining, weekly_start, weekly_end = preferred
-            weekly_used = weekly_total - weekly_remaining
-            weekly_percent_remaining = round(weekly_remaining / weekly_total * 100, 1)
-            windows.append(
-                Window(
-                    label="weekly",
-                    percent_remaining=weekly_percent_remaining,
-                    percent_used=round(100 - weekly_percent_remaining, 1),
-                    remaining_text=f"{weekly_remaining}/{weekly_total} requests left",
-                    reset_at=weekly_end,
-                    reset_text=relative_reset_text(weekly_end),
-                    meta={"used_count": weekly_used, "total": weekly_total, "window_start": weekly_start, "window_end": weekly_end},
-                )
-            )
+            windows.append(preferred)
         return ProviderResult(provider="minimax", status="ok", source="api", windows=windows)
 
     def probe_zai(self) -> ProviderResult:
@@ -869,9 +895,15 @@ class UsageService:
 
     def _require_access_token(self, credential: dict[str, Any], provider: str) -> str:
         token = credential.get("access_token")
-        if not token:
-            raise ProbeError(f"credential for {provider} has no access token")
-        return str(token)
+        if token:
+            return str(token)
+        source = str(credential.get("source") or "")
+        if source.startswith("env:"):
+            env_key = source.split(":", 1)[1].strip()
+            token = os.environ.get(env_key) or load_env_value(Path(self.config.auth_path).with_name(".env"), env_key)
+            if token:
+                return str(token)
+        raise ProbeError(f"credential for {provider} has no access token")
 
     def _refresh_codex_if_needed(self, credential: dict[str, Any]) -> dict[str, Any]:
         access_token = credential.get("access_token")
@@ -1783,6 +1815,27 @@ def summarize_zai_model_usage(payload: dict[str, Any]) -> Window | None:
     return Window(label="7d-activity", remaining_text=f"{total_prompts} prompts · {total_tokens:,} tokens")
 
 
+def expand_path(value: str) -> str:
+    return os.path.expandvars(os.path.expanduser(value))
+
+
+def load_env_value(path: Path, key: str) -> str | None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return None
+    prefix = f"{key}="
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or not stripped.startswith(prefix):
+            continue
+        value = stripped.split("=", 1)[1].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'\"', "'"}:
+            value = value[1:-1]
+        return value or None
+    return None
+
+
 def jwt_claim(token: Any, claim: str) -> str | None:
     if not token or not isinstance(token, str) or token.count(".") < 2:
         return None
@@ -1795,10 +1848,6 @@ def jwt_claim(token: Any, claim: str) -> str | None:
     except Exception:
         return None
 
-
-
-def expand_path(value: str) -> str:
-    return os.path.expandvars(os.path.expanduser(value))
 
 def friendly_error(provider: str, error: str) -> str:
     if provider == "anthropic" and "429" in error:
@@ -1833,10 +1882,10 @@ def load_config(path: str | None) -> AppConfig:
         auth_path=expand_path(str(raw.get("auth_path", DEFAULT_AUTH_PATH))),
         timeout_seconds=int(raw.get("timeout_seconds", DEFAULT_TIMEOUT)),
         refresh_seconds=int(raw.get("refresh_seconds", DEFAULT_REFRESH_SECONDS)),
-        claude_credentials_path=expand_path(str(raw.get("claude_credentials_path", AppConfig().claude_credentials_path))),
-        claude_statusline_path=expand_path(str(raw.get("claude_statusline_path", AppConfig().claude_statusline_path))),
-        cache_path=expand_path(str(raw.get("cache_path", AppConfig().cache_path))),
-        kimi_credentials_path=expand_path(str(raw.get("kimi_credentials_path", AppConfig().kimi_credentials_path))),
+        claude_credentials_path=expand_path(str(raw.get("claude_credentials_path", AppConfig.claude_credentials_path))),
+        claude_statusline_path=expand_path(str(raw.get("claude_statusline_path", AppConfig.claude_statusline_path))),
+        cache_path=expand_path(str(raw.get("cache_path", AppConfig.cache_path))),
+        kimi_credentials_path=expand_path(str(raw.get("kimi_credentials_path", AppConfig.kimi_credentials_path))),
     )
 
 
