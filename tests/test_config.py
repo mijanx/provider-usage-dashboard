@@ -110,6 +110,27 @@ port: 9876
             self.assertEqual(result.windows[-1].label, "weekly")
             self.assertEqual(result.windows[-1].remaining_text, "80.0% left")
 
+    def test_claude_statusline_primary_windows_override_api_aggregate(self):
+        service = app.UsageService(app.AppConfig(auth_path="/tmp/nonexistent-auth.json"))
+        future = (app.datetime.now(app.timezone.utc) + app.timedelta(days=3)).isoformat()
+        past = (app.datetime.now(app.timezone.utc) - app.timedelta(hours=1)).isoformat()
+        api_windows = [
+            app.Window(label="session", percent_remaining=100.0, percent_used=0.0),
+            app.Window(label="weekly", percent_remaining=94.0, percent_used=6.0),
+            app.Window(label="weekly-sonnet", percent_remaining=95.0, percent_used=5.0),
+        ]
+        statusline_windows = [
+            app.Window(label="session", percent_remaining=88.0, percent_used=12.0, reset_at=past),
+            app.Window(label="weekly", percent_remaining=31.0, percent_used=69.0, reset_at=future),
+        ]
+
+        merged = service._merge_claude_statusline_windows(api_windows, statusline_windows)
+
+        self.assertEqual([window.label for window in merged], ["session", "weekly", "weekly-sonnet"])
+        self.assertEqual(merged[0].percent_remaining, 100.0)
+        self.assertEqual(merged[1].percent_remaining, 31.0)
+        self.assertEqual(merged[2].percent_remaining, 95.0)
+
     def test_weekly_pace_marker_uses_weekly_summary_target(self):
         self.assertIn(
             "const marker = weekly && summary ? summary.expectedUsed : windowExpectedUsed(window);",
