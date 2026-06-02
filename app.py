@@ -1470,7 +1470,9 @@ function windowExpectedUsed(window) {
     const startMs = Date.parse(meta.window_start);
     if (Number.isFinite(startMs) && startMs < endMs) spanMs = endMs - startMs;
   }
-  if (!spanMs && String(window.label || '').startsWith('session')) spanMs = 5 * 60 * 60 * 1000;
+  const label = String(window.label || '');
+  if (!spanMs && label.startsWith('session')) spanMs = 5 * 60 * 60 * 1000;
+  if (!spanMs && label.startsWith('weekly')) spanMs = 7 * 24 * 60 * 60 * 1000;
   if (!spanMs) return null;
   const startMs = endMs - spanMs;
   const progress = Math.max(0, Math.min(1, (Date.now() - startMs) / spanMs));
@@ -1517,10 +1519,10 @@ function renderPrimaryCell(provider, window, fallbackLabel, summary) {
   const tone = toneForWindow(provider, window);
   const cls = toneClasses(tone);
   const used = Math.max(0, Math.min(100, Number(window.percent_used ?? 0)));
-  const marker = windowExpectedUsed(window);
-  const counts = countsText(window);
   const weekly = window.label === 'weekly';
   const pace = weekly ? paceState(summary, provider) : null;
+  const marker = weekly && summary ? summary.expectedUsed : windowExpectedUsed(window);
+  const counts = countsText(window);
   return `
     <div class=\"pcell\">
       <div class=\"pcell__head\">

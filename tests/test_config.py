@@ -110,6 +110,13 @@ port: 9876
             self.assertEqual(result.windows[-1].label, "weekly")
             self.assertEqual(result.windows[-1].remaining_text, "80.0% left")
 
+    def test_weekly_pace_marker_uses_weekly_summary_target(self):
+        self.assertIn(
+            "const marker = weekly && summary ? summary.expectedUsed : windowExpectedUsed(window);",
+            app.HTML,
+        )
+        self.assertIn("if (!spanMs && label.startsWith('weekly'))", app.HTML)
+
 
 if __name__ == "__main__":
     unittest.main()
