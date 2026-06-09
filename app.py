@@ -21,6 +21,7 @@ DEFAULT_PORT = 8768
 DEFAULT_AUTH_PATH = os.environ.get("PROVIDER_USAGE_AUTH_PATH", str(Path.home() / ".hermes" / "profiles" / "dev" / "auth.json"))
 DEFAULT_TIMEOUT = 15
 DEFAULT_REFRESH_SECONDS = 60
+CLAUDE_STATUSLINE_MAX_AGE_SECONDS = 30 * 60
 
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CODEX_REFRESH_URL = "https://auth.openai.com/oauth/token"
@@ -128,7 +129,15 @@ class AuthStore:
     def credentials(self, provider: str) -> list[dict[str, Any]]:
         data = self.load()
         pool = data.get("credential_pool", {}).get(provider)
-        if not isinstance(pool, list) or not pool:
+        entries = [entry for entry in (pool or []) if isinstance(entry, dict)] if isinstance(pool, list) else []
+
+        # Hermes shared auth can hold a fresher provider singleton while the credential pool
+        # still contains an expired/stale slot. The dashboard should not let that stale pool
+        # entry poison the whole provider card.
+        provider_entry = self._provider_singleton_credential(data, provider)
+        if provider_entry:
+            entries.append(provider_entry)
+        if not entries:
             return []
 
         def sort_key(entry: dict[str, Any]) -> tuple[int, int, int]:
@@ -136,11 +145,16 @@ class AuthStore:
             error_code = as_int(entry.get("last_error_code"))
             error_reason = str(entry.get("last_error_reason") or "").lower()
             priority = as_int(entry.get("priority")) or 9999
-            if status == "ok":
+            token_exp = as_int(jwt_claim(entry.get("access_token"), "exp"))
+            token_is_fresh = token_exp is not None and datetime.fromtimestamp(token_exp, tz=timezone.utc) - datetime.now(timezone.utc) > timedelta(minutes=10)
+            token_is_expired = token_exp is not None and not token_is_fresh
+            if token_is_fresh:
                 health_rank = 0
-            elif not status and error_code is None and not error_reason:
+            elif status == "ok" and not token_is_expired:
                 health_rank = 1
-            elif status in {"exhausted", "rate_limited"} or error_code in {401, 402, 429} or error_reason in {"exhausted", "rate_limited"}:
+            elif not status and error_code is None and not error_reason and not token_is_expired:
+                health_rank = 1
+            elif status in {"exhausted", "rate_limited"} or error_code in {401, 402, 429} or error_reason in {"exhausted", "rate_limited"} or token_is_expired:
                 health_rank = 2
             else:
                 health_rank = 1
@@ -148,7 +162,30 @@ class AuthStore:
             freshness_rank = -int(refresh_hint.timestamp()) if refresh_hint is not None else 0
             return health_rank, priority, freshness_rank
 
-        return sorted((entry for entry in pool if isinstance(entry, dict)), key=sort_key)
+        return sorted(entries, key=sort_key)
+
+    def _provider_singleton_credential(self, data: dict[str, Any], provider: str) -> dict[str, Any] | None:
+        raw_providers = data.get("providers")
+        provider_data = raw_providers.get(provider) if isinstance(raw_providers, dict) else None
+        if not isinstance(provider_data, dict):
+            return None
+        raw_tokens = provider_data.get("tokens")
+        tokens = raw_tokens if isinstance(raw_tokens, dict) else {}
+        access_token = provider_data.get("access_token") or tokens.get("access_token")
+        refresh_token = provider_data.get("refresh_token") or tokens.get("refresh_token")
+        if not access_token and not refresh_token:
+            return None
+        return {
+            "id": f"__provider__:{provider}",
+            "label": provider_data.get("label") or provider,
+            "source": provider_data.get("auth_mode") or "providers",
+            "priority": -1,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "id_token": provider_data.get("id_token") or tokens.get("id_token"),
+            "last_refresh": provider_data.get("last_refresh"),
+            "last_status": "ok" if access_token else None,
+        }
 
     def first_credential(self, provider: str) -> dict[str, Any] | None:
         ordered = self.credentials(provider)
@@ -643,6 +680,12 @@ class UsageService:
         if not path.exists():
             return []
         try:
+            age_seconds = time.time() - path.stat().st_mtime
+        except Exception:
+            return []
+        if age_seconds > CLAUDE_STATUSLINE_MAX_AGE_SECONDS:
+            return []
+        try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return []
@@ -953,7 +996,10 @@ class UsageService:
                 return credential
 
         last_refresh = parse_iso(credential.get("last_refresh"))
-        if last_refresh and datetime.now(timezone.utc) - last_refresh < timedelta(days=8):
+        # Only use last_refresh as a fallback freshness hint when the token has no
+        # decodable expiry. If the JWT says the access token is expired/near-expiry,
+        # refresh now; otherwise stale last_refresh metadata can mask a dead token.
+        if token_exp is None and last_refresh and datetime.now(timezone.utc) - last_refresh < timedelta(days=8):
             return credential
 
         refresh_token = credential.get("refresh_token")
@@ -985,6 +1031,9 @@ class UsageService:
             "last_error_reason": None,
             "last_error_message": None,
         }
+        if str(credential.get("id") or "").startswith("__provider__:"):
+            credential.update(updates)
+            return credential
         return self.auth.update_credential("openai-codex", str(credential["id"]), updates)
 
     def _refresh_claude_if_needed(self, credential: dict[str, Any], source: str) -> dict[str, Any]:
