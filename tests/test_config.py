@@ -131,6 +131,21 @@ port: 9876
         self.assertEqual(merged[1].percent_remaining, 31.0)
         self.assertEqual(merged[2].percent_remaining, 95.0)
 
+    def test_primary_cells_lead_with_used_percent_not_remaining_percent(self):
+        self.assertIn(
+            '<span class="pct ${cls.pct}">${pct(window.percent_used)} used</span>',
+            app.HTML,
+        )
+        self.assertIn(
+            '<span class="used">${pct(window.percent_remaining)} left</span>',
+            app.HTML,
+        )
+        self.assertIn(
+            '<div class="secondary__item__pct">${pct(window.percent_used)} used</div>',
+            app.HTML,
+        )
+        self.assertIn("live · statusline", app.HTML)
+
     def test_weekly_pace_marker_uses_weekly_summary_target(self):
         self.assertIn(
             "const marker = weekly && summary ? summary.expectedUsed : windowExpectedUsed(window);",

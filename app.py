@@ -1455,7 +1455,7 @@ function providerMeta(provider) {
 function snapshotInfo(provider) {
   const source = String(provider.source || '');
   if (provider.status === 'stale' || source.includes('cache')) return { cls: 'cached', label: source.includes('statusline') ? 'cached · statusline' : 'cached' };
-  if (provider.status === 'ok') return { cls: 'live', label: 'live' };
+  if (provider.status === 'ok') return { cls: 'live', label: source.includes('statusline') ? 'live · statusline' : 'live' };
   if (provider.status === 'rate_limited' || provider.status === 'auth_required') return { cls: 'probe', label: provider.status.replace('_', ' ') };
   return { cls: 'error', label: 'probe only' };
 }
@@ -1615,7 +1615,7 @@ function renderPrimaryCell(provider, window, fallbackLabel, summary) {
     <div class=\"pcell\">
       <div class=\"pcell__head\">
         <span class=\"pcell__label\">${esc(window.label === 'session' ? '5h window' : window.label)}</span>
-        <span class=\"pcell__values\"><span class=\"pct ${cls.pct}\">${pct(window.percent_remaining)}</span><span class=\"sep\">·</span><span class=\"used\">${pct(window.percent_used)} used</span></span>
+        <span class=\"pcell__values\"><span class=\"pct ${cls.pct}\">${pct(window.percent_used)} used</span><span class=\"sep\">·</span><span class=\"used\">${pct(window.percent_remaining)} left</span></span>
       </div>
       <div class=\"pcell__subrow\">${weekly ? `${pace ? `<span class=\"pace-chip pace-chip--${esc(pace.cls)}\">${esc(pace.label)}</span>` : '<span></span>'}<span class=\"pcell__target\">target ${esc(pct(summary?.expectedUsed))}</span>` : '<span></span>'}</div>
       <div class=\"pacebar ${cls.bar}\">
@@ -1637,7 +1637,7 @@ function renderSecondaryWindow(provider, window) {
         ${aliases ? `<span class=\"dim\">· ${esc(aliases)}</span>` : ''}
       </div>
       <div class=\"pacebar ${cls.bar}\"><div class=\"pacebar__fill\" style=\"width:${used.toFixed(1)}%\"></div></div>
-      <div class=\"secondary__item__pct\">${pct(window.percent_remaining)}</div>
+      <div class=\"secondary__item__pct\">${pct(window.percent_used)} used</div>
     </div>`;
 }
 function renderResetColumn(provider, sessionWindow, weeklyWindow, secondaries) {
