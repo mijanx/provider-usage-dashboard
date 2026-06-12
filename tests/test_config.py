@@ -110,26 +110,45 @@ port: 9876
             self.assertEqual(result.windows[-1].label, "weekly")
             self.assertEqual(result.windows[-1].remaining_text, "80.0% left")
 
-    def test_claude_statusline_primary_windows_override_api_aggregate(self):
+    def test_claude_statusline_weekly_does_not_override_api_aggregate(self):
         service = app.UsageService(app.AppConfig(auth_path="/tmp/nonexistent-auth.json"))
         future = (app.datetime.now(app.timezone.utc) + app.timedelta(days=3)).isoformat()
         past = (app.datetime.now(app.timezone.utc) - app.timedelta(hours=1)).isoformat()
         api_windows = [
             app.Window(label="session", percent_remaining=100.0, percent_used=0.0),
-            app.Window(label="weekly", percent_remaining=94.0, percent_used=6.0),
-            app.Window(label="weekly-sonnet", percent_remaining=95.0, percent_used=5.0),
+            app.Window(label="weekly", percent_remaining=1.0, percent_used=99.0),
+            app.Window(label="weekly-sonnet", percent_remaining=53.0, percent_used=47.0),
         ]
         statusline_windows = [
+            # stale 5h/statusline sessions must not override the API value
             app.Window(label="session", percent_remaining=88.0, percent_used=12.0, reset_at=past),
-            app.Window(label="weekly", percent_remaining=31.0, percent_used=69.0, reset_at=future),
+            # live Claude Code statusline weekly can disagree with Anthropic account usage
+            app.Window(label="weekly", percent_remaining=91.0, percent_used=9.0, reset_at=future),
         ]
 
         merged = service._merge_claude_statusline_windows(api_windows, statusline_windows)
 
-        self.assertEqual([window.label for window in merged], ["session", "weekly", "weekly-sonnet"])
-        self.assertEqual(merged[0].percent_remaining, 100.0)
-        self.assertEqual(merged[1].percent_remaining, 31.0)
-        self.assertEqual(merged[2].percent_remaining, 95.0)
+        self.assertEqual([window.label for window in merged], ["session", "weekly", "weekly-sonnet", "weekly-statusline"])
+        self.assertEqual(merged[0].percent_used, 0.0)
+        self.assertEqual(merged[1].percent_used, 99.0)
+        self.assertEqual(merged[2].percent_used, 47.0)
+        self.assertEqual(merged[3].percent_used, 9.0)
+        self.assertEqual(merged[3].meta["source"], "claude-code-statusline")
+
+    def test_claude_current_statusline_session_can_override_api_session(self):
+        service = app.UsageService(app.AppConfig(auth_path="/tmp/nonexistent-auth.json"))
+        future = (app.datetime.now(app.timezone.utc) + app.timedelta(hours=3)).isoformat()
+        api_windows = [
+            app.Window(label="session", percent_remaining=100.0, percent_used=0.0),
+            app.Window(label="weekly", percent_remaining=1.0, percent_used=99.0),
+        ]
+        statusline_windows = [app.Window(label="session", percent_remaining=20.0, percent_used=80.0, reset_at=future)]
+
+        merged = service._merge_claude_statusline_windows(api_windows, statusline_windows)
+
+        self.assertEqual([window.label for window in merged], ["session", "weekly"])
+        self.assertEqual(merged[0].percent_used, 80.0)
+        self.assertEqual(merged[1].percent_used, 99.0)
 
     def test_primary_cells_lead_with_used_percent_not_remaining_percent(self):
         self.assertIn(
@@ -145,6 +164,9 @@ port: 9876
             app.HTML,
         )
         self.assertIn("live · statusline", app.HTML)
+
+    def test_root_html_is_sent_with_no_store_cache_header(self):
+        self.assertIn('self.send_header("Cache-Control", "no-store")', APP_PATH.read_text())
 
     def test_weekly_pace_marker_uses_weekly_summary_target(self):
         self.assertIn(
