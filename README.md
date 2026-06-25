@@ -1,6 +1,6 @@
 # Provider Usage Dashboard
 
-![Screenshot](assets/screenshot.svg)
+![Screenshot](assets/screenshot.png)
 
 Local-first web dashboard for tracking AI provider quota, plan, and usage-window state from the credential files already present on a developer machine.
 
