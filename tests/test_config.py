@@ -14,12 +14,32 @@ spec.loader.exec_module(app)
 
 
 class ConfigTests(unittest.TestCase):
+    def test_default_host_is_loopback(self):
+        self.assertEqual(app.DEFAULT_HOST, "127.0.0.1")
+        self.assertEqual(app.AppConfig().host, "127.0.0.1")
+
     def test_parse_simple_yaml_expands_types(self):
         data = app.parse_simple_yaml("""port: 9999
 flag: true
 name: demo
 """)
         self.assertEqual(data, {"port": 9999, "flag": True, "name": "demo"})
+
+    def test_usage_payload_does_not_expose_auth_path(self):
+        service = app.UsageService(app.AppConfig(auth_path="/tmp/private-auth.json"))
+
+        def fake_probe(provider, fn):
+            return app.ProviderResult(provider=provider, status="error", source="test")
+
+        old_safe_probe = service._safe_probe
+        try:
+            service._safe_probe = fake_probe
+            payload = service.collect_all()
+        finally:
+            service._safe_probe = old_safe_probe
+
+        self.assertNotIn("auth_path", payload)
+        self.assertEqual(payload["host"], "127.0.0.1")
 
     def test_load_config_expands_user_and_env(self):
         with tempfile.TemporaryDirectory() as td:

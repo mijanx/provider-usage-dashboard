@@ -19,6 +19,8 @@ python3 app.py --config config.yaml
 
 Open `http://127.0.0.1:8768/`.
 
+By default the app binds to `127.0.0.1`. For trusted-LAN access, explicitly set `host: 0.0.0.0` in your private `config.yaml` or pass `--host 0.0.0.0`.
+
 ## Credential source
 
 The default `auth_path` expects a Hermes-style `auth.json` with `credential_pool` entries. See `fixtures/sample-auth.json` for the expected shape. Replace all `REPLACE_ME` values; do not commit real credentials.

@@ -22,6 +22,8 @@ python3 app.py --config config.example.yaml
 # open http://127.0.0.1:8768/
 ```
 
+The built-in default bind address is loopback-only (`127.0.0.1`). Use `--host 0.0.0.0` or set `host: 0.0.0.0` only when you intentionally want trusted-LAN access.
+
 One-shot JSON:
 
 ```bash
@@ -65,7 +67,7 @@ Use `provider-usage-dashboard.service` as a template. Edit `WorkingDirectory` an
 
 ## Security model
 
-This is LAN-trust tooling. It reads/refreshes local OAuth credentials and should stay behind localhost, VPN, or a trusted LAN.
+This is localhost/trusted-LAN tooling. It reads/refreshes local OAuth credentials and should stay behind localhost, VPN, or a trusted LAN. Do not expose a running dashboard to the public internet.
 
 ## Install
 

@@ -16,7 +16,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8768
 DEFAULT_AUTH_PATH = os.environ.get("PROVIDER_USAGE_AUTH_PATH", str(Path.home() / ".hermes" / "profiles" / "dev" / "auth.json"))
 DEFAULT_TIMEOUT = 15
@@ -275,7 +275,6 @@ class UsageService:
             "generated_at": now,
             "host": self.config.host,
             "port": self.config.port,
-            "auth_path": self.config.auth_path,
             "providers": [result.as_dict() for result in results],
             "summary": {
                 "ok": ok,
