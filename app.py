@@ -1365,18 +1365,25 @@ HTML = """<!doctype html>
     .pace-chip--crit { color: var(--crit); border-color: var(--crit-line); background: var(--crit-bg); }
     .pace-chip--stale { color: var(--stale); border-color: var(--stale-line); background: var(--stale-bg); }
     .pacebar {
-      position:relative; height:6px; background: var(--bg-inset); border-radius:999px; overflow:hidden;
+      position:relative; height:6px; background: var(--bg-inset); border-radius:999px; overflow:visible;
       border:1px solid var(--line-soft);
     }
     .pacebar__fill {
       position:absolute; left:0; top:0; bottom:0; background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+      border-radius:999px;
     }
     .pacebar--warn .pacebar__fill { background: linear-gradient(90deg, #B8862F, var(--warn)); }
     .pacebar--crit .pacebar__fill { background: linear-gradient(90deg, #B0524A, var(--crit)); }
     .pacebar--stale .pacebar__fill { background: repeating-linear-gradient(135deg, var(--stale) 0 4px, rgba(139,149,168,0.45) 4px 8px); opacity:0.72; }
     .pacebar__marker {
       position:absolute; top:-4px; bottom:-4px; width:2px; background:#EEF3F8; border-radius:999px;
-      box-shadow: 0 0 0 2px rgba(8,17,31,0.78); opacity:0.8;
+      box-shadow: 0 0 0 2px rgba(8,17,31,0.78); opacity:0.9; overflow:visible;
+    }
+    .pacebar__marker span {
+      position:absolute; left:50%; bottom:100%; transform:translate(-50%, -3px);
+      padding:1px 4px; border-radius:999px; border:1px solid rgba(238,243,248,0.35);
+      background:rgba(8,17,31,0.92); color:#EEF3F8; font-family:var(--mono); font-size:8px;
+      line-height:1.2; text-transform:uppercase; letter-spacing:0.06em; white-space:nowrap;
     }
     .pcell__resets { font-family: var(--mono); font-size:10.5px; color: var(--fg-3); margin-top:1px; }
     .prow__reset {
@@ -1561,7 +1568,7 @@ function renderSummary(data) {
     `<div class=\"pill pill--ok\">OK <b>${esc(data.summary.ok)}/${esc(data.summary.total)}</b></div>`,
     `<div class=\"pill ${data.summary.degraded ? 'pill--warn' : ''}\">Degraded <b>${esc(data.summary.degraded)}</b></div>`,
     `<div class=\"pill ${data.summary.errors ? 'pill--crit' : ''}\">Errors <b>${esc(data.summary.errors)}</b></div>`,
-    `<div class=\"pill\">Auth <b>${esc(data.auth_path)}</b></div>`
+    `<div class=\"pill\">LAN-local <b>${esc(data.host)}:${esc(data.port)}</b></div>`
   ].join('');
 }
 function windowExpectedUsed(window) {
@@ -1637,7 +1644,7 @@ function renderPrimaryCell(provider, window, fallbackLabel, summary) {
       <div class=\"pcell__subrow\">${weekly ? `${pace ? `<span class=\"pace-chip pace-chip--${esc(pace.cls)}\">${esc(pace.label)}</span>` : '<span></span>'}<span class=\"pcell__target\">target ${esc(pct(summary?.expectedUsed))}</span>` : '<span></span>'}</div>
       <div class=\"pacebar ${cls.bar}\">
         <div class=\"pacebar__fill\" style=\"width:${used.toFixed(1)}%\"></div>
-        ${marker !== null ? `<div class=\"pacebar__marker\" style=\"left:calc(${Math.max(0, Math.min(100, marker)).toFixed(1)}% - 1px)\"></div>` : ''}
+        ${marker !== null ? `<div class=\"pacebar__marker\" style=\"left:calc(${Math.max(0, Math.min(100, marker)).toFixed(1)}% - 1px)\"><span>${weekly ? 'pace' : 'time'}</span></div>` : ''}
       </div>
       <div class=\"pcell__resets\">${esc(counts || window.remaining_text || '')}${window.reset_text ? ` · ${esc(window.reset_text)}` : ''}${weekly && summary ? ` · pace marker = even-burn target` : ''}</div>
     </div>`;
