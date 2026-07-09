@@ -39,9 +39,11 @@ The `/api/usage` payload deliberately omits credential file paths and secret val
 | OpenAI Codex | OAuth credential entries | Uses Codex/ChatGPT usage endpoints and OAuth refresh support. |
 | Anthropic Claude | OAuth credential entries + optional Claude Code statusline fallback | Merges API usage with Claude Code statusline windows when useful. |
 | Kimi Code | Kimi credential JSON or `KIMI_AUTH_TOKEN` | Session/usage data with refresh support where credentials allow it. |
-| xAI / Grok | OAuth/API credential resolver | Subscription/account metadata where accessible. |
+| xAI / Grok | OAuth credential resolver + Grok usage UI API | Shared weekly pool percentage/reset plus subscription metadata; safely falls back if the undocumented UI endpoint changes. |
 
 Provider APIs change. The dashboard is best treated as a practical local operator view, not a stable billing ledger.
+
+The xAI weekly meter is the shared Grok subscription pool documented for Chat, Imagine, Voice, Build, and related products. It is separate from xAI API-team billing analytics. See [`docs/xai-usage-surface.md`](docs/xai-usage-surface.md) for the endpoint classification, limitations, and evidence.
 
 ## Quick start
 
