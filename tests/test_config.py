@@ -249,6 +249,16 @@ port: 9876
         )
         self.assertIn("live · statusline", app.HTML)
 
+    def test_weekly_provider_keeps_non_display_fallback_in_session_cell(self):
+        self.assertIn(
+            "const sessionWindow = windowByLabel(provider, 'session') || fallbackPrimaries.shift() || null;",
+            app.HTML,
+        )
+        self.assertNotIn(
+            "windowByLabel(provider, 'session') || (weeklyWindow ? null : fallbackPrimaries.shift())",
+            app.HTML,
+        )
+
     def test_root_html_is_sent_with_no_store_cache_header(self):
         self.assertIn('self.send_header("Cache-Control", "no-store")', APP_PATH.read_text())
 

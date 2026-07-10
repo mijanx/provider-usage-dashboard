@@ -1740,7 +1740,7 @@ function renderProvider(provider) {
   const primaryCandidates = primaryWindows(provider);
   const displayOnlyLabels = new Set(['account', 'billing_period']);
   const fallbackPrimaries = primaryCandidates.filter(window => window !== weeklyWindow && !displayOnlyLabels.has(window.label));
-  const sessionWindow = windowByLabel(provider, 'session') || (weeklyWindow ? null : fallbackPrimaries.shift()) || null;
+  const sessionWindow = windowByLabel(provider, 'session') || fallbackPrimaries.shift() || null;
   const secondWindow = weeklyWindow || fallbackPrimaries.shift() || null;
   const primaries = [sessionWindow, secondWindow].filter(Boolean);
   const secondaries = secondaryWindows(provider, primaries);
