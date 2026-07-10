@@ -168,6 +168,32 @@ port: 9876
             self.assertEqual(result.windows[-1].percent_remaining, 75.0)
             self.assertEqual(result.windows[-1].remaining_text, "15/20 requests left")
 
+    def test_minimax_keeps_exhausted_percent_only_windows(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "auth.json"
+            auth_path.write_text(
+                json.dumps({"credential_pool": {"minimax": [{"access_token": "token"}]}}),
+                encoding="utf-8",
+            )
+            service = app.UsageService(app.AppConfig(auth_path=str(auth_path)))
+            payload = {
+                "base_resp": {"status_code": 0},
+                "model_remains": [{
+                    "model_name": "general",
+                    "current_interval_remaining_percent": 0,
+                    "current_weekly_remaining_percent": 0,
+                }],
+            }
+            old_http_json = app.http_json
+            try:
+                app.http_json = lambda *args, **kwargs: payload
+                result = service.probe_minimax()
+            finally:
+                app.http_json = old_http_json
+
+            self.assertEqual([window.percent_remaining for window in result.windows], [0.0, 0.0])
+            self.assertEqual([window.percent_used for window in result.windows], [100.0, 100.0])
+
     def test_claude_statusline_weekly_does_not_override_api_aggregate(self):
         service = app.UsageService(app.AppConfig(auth_path="/tmp/nonexistent-auth.json"))
         future = (app.datetime.now(app.timezone.utc) + app.timedelta(days=3)).isoformat()

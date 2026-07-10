@@ -318,7 +318,11 @@ class UsageService:
             source_model = str(row.get("model_name") or row.get("modelName") or "model")
             total = as_int(row["current_interval_total_count"] if "current_interval_total_count" in row else row.get("currentIntervalTotalCount"))
             usage_count = as_int(row["current_interval_usage_count"] if "current_interval_usage_count" in row else row.get("currentIntervalUsageCount"))
-            percent_remaining = as_float(row.get("current_interval_remaining_percent") or row.get("currentIntervalRemainingPercent"))
+            percent_remaining = as_float(
+                row["current_interval_remaining_percent"]
+                if "current_interval_remaining_percent" in row
+                else row.get("currentIntervalRemainingPercent")
+            )
             window_start = from_epoch_ms(row.get("start_time") or row.get("startTime"))
             reset_at = from_epoch_ms(row.get("end_time") or row.get("endTime"))
             interval_seconds = None
@@ -360,7 +364,11 @@ class UsageService:
 
             weekly_total = as_int(row["current_weekly_total_count"] if "current_weekly_total_count" in row else row.get("currentWeeklyTotalCount"))
             weekly_usage = as_int(row["current_weekly_usage_count"] if "current_weekly_usage_count" in row else row.get("currentWeeklyUsageCount"))
-            weekly_percent = as_float(row.get("current_weekly_remaining_percent") or row.get("currentWeeklyRemainingPercent"))
+            weekly_percent = as_float(
+                row["current_weekly_remaining_percent"]
+                if "current_weekly_remaining_percent" in row
+                else row.get("currentWeeklyRemainingPercent")
+            )
             weekly_start = from_epoch_ms(row.get("weekly_start_time") or row.get("weeklyStartTime"))
             weekly_end = from_epoch_ms(row.get("weekly_end_time") or row.get("weeklyEndTime"))
             weekly_meta = {
