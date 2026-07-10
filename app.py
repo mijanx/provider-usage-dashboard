@@ -1931,7 +1931,9 @@ def parse_xai_billing_grpc_web(raw: bytes, now: datetime | None = None) -> dict[
         (path[:2] == (1, 6)) or (path == (1, 8, 1) and value in (1, 2))
         for path, value in varints
     )
-    percent_used = picked[1] if picked else (0.0 if has_usage_period and end_epoch else None)
+    percent_used = picked[1] if picked else (
+        0.0 if not fixed32 and has_usage_period and end_epoch else None
+    )
     if percent_used is None:
         raise ProbeError("xAI usage API response contained no recognized usage percent")
 

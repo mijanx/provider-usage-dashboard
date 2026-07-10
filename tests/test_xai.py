@@ -39,11 +39,21 @@ def timestamp(seconds: int) -> bytes:
     return varint(1 << 3) + varint(seconds)
 
 
-def billing_response(percent: float | None, start: int, end: int, *, grpc_status: int = 0) -> bytes:
+def billing_response(
+    percent: float | None,
+    start: int,
+    end: int,
+    *,
+    grpc_status: int = 0,
+    unrelated_fixed32: float | None = None,
+) -> bytes:
     payload = bytearray()
     if percent is not None:
         payload.extend(varint((1 << 3) | 5))
         payload.extend(struct.pack("<f", percent))
+    if unrelated_fixed32 is not None:
+        payload.extend(varint((2 << 3) | 5))
+        payload.extend(struct.pack("<f", unrelated_fixed32))
     payload.extend(length_field(4, timestamp(start)))
     payload.extend(length_field(5, timestamp(end)))
     payload.extend(length_field(8, varint(1 << 3) + varint(2)))
@@ -69,6 +79,11 @@ class XaiBillingParserTests(unittest.TestCase):
     def test_omitted_proto3_zero_is_zero_during_current_period(self) -> None:
         parsed = parse_xai_billing_grpc_web(billing_response(None, self.start, self.end), now=self.now)
         self.assertEqual(parsed["percent_used"], 0.0)
+
+    def test_unrecognized_fixed32_degrades_instead_of_assuming_zero(self) -> None:
+        raw = billing_response(None, self.start, self.end, unrelated_fixed32=42.0)
+        with self.assertRaisesRegex(ProbeError, "no recognized usage percent"):
+            parse_xai_billing_grpc_web(raw, now=self.now)
 
     def test_rejects_nonzero_grpc_status(self) -> None:
         with self.assertRaisesRegex(ProbeError, "gRPC status 7"):
