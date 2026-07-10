@@ -325,14 +325,10 @@ class UsageService:
             )
             window_start = from_epoch_ms(row.get("start_time") or row.get("startTime"))
             reset_at = from_epoch_ms(row.get("end_time") or row.get("endTime"))
-            interval_seconds = None
-            if window_start and reset_at:
-                start_dt = parse_iso(window_start)
-                end_dt = parse_iso(reset_at)
-                if start_dt is not None and end_dt is not None:
-                    interval_seconds = (end_dt - start_dt).total_seconds()
-            is_five_hour_window = source_model == "general" and interval_seconds == 5 * 60 * 60
-            label = "session" if is_five_hour_window else source_model
+            # MiniMax exposes the coding-plan session pool as the "general"
+            # current interval. Its reported start can advance within the rolling
+            # window, so the observed span is not reliably exactly five hours.
+            label = "session" if source_model == "general" else source_model
             meta = {
                 "status": row.get("current_interval_status") or row.get("currentIntervalStatus"),
                 "source_model": source_model,

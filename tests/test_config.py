@@ -109,7 +109,9 @@ port: 9876
                             "current_interval_remaining_percent": 42.5,
                             "current_interval_status": "available",
                             "start_time": 1783677600000,
-                            "end_time": 1783695600000,
+                            # The API can report less than the nominal five-hour
+                            # span while this is still the general session pool.
+                            "end_time": 1783692000000,
                             "current_weekly_remaining_percent": 80,
                             "current_weekly_status": "available",
                         }
