@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import os
+import struct
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -41,6 +43,7 @@ ZAI_LIMIT_URL = "https://api.z.ai/api/monitor/usage/quota/limit"
 ZAI_MODEL_USAGE_URL = "https://api.z.ai/api/monitor/usage/model-usage?timeRange=7d"
 XAI_ME_URL = "https://api.x.ai/v1/me"
 XAI_SUBSCRIPTIONS_URL = "https://grok.com/rest/subscriptions"
+XAI_CREDITS_URL = "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
 
 
 @dataclass
@@ -312,16 +315,29 @@ class UsageService:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            label = str(row.get("model_name") or row.get("modelName") or "model")
-            total = as_int(row.get("current_interval_total_count") or row.get("currentIntervalTotalCount"))
-            remaining_count = as_int(row.get("current_interval_usage_count") or row.get("currentIntervalUsageCount"))
-            percent_remaining = as_float(row.get("current_interval_remaining_percent") or row.get("currentIntervalRemainingPercent"))
+            source_model = str(row.get("model_name") or row.get("modelName") or "model")
+            total = as_int(row["current_interval_total_count"] if "current_interval_total_count" in row else row.get("currentIntervalTotalCount"))
+            usage_count = as_int(row["current_interval_usage_count"] if "current_interval_usage_count" in row else row.get("currentIntervalUsageCount"))
+            percent_remaining = as_float(
+                row["current_interval_remaining_percent"]
+                if "current_interval_remaining_percent" in row
+                else row.get("currentIntervalRemainingPercent")
+            )
+            window_start = from_epoch_ms(row.get("start_time") or row.get("startTime"))
             reset_at = from_epoch_ms(row.get("end_time") or row.get("endTime"))
-            meta = {"status": row.get("current_interval_status") or row.get("currentIntervalStatus")}
-            used_count = None
-            if total is not None and remaining_count is not None and total > 0:
-                remaining_count = max(0, min(total, remaining_count))
-                used_count = total - remaining_count
+            # MiniMax exposes the coding-plan session pool as the "general"
+            # current interval. Its reported start can advance within the rolling
+            # window, so the observed span is not reliably exactly five hours.
+            label = "session" if source_model == "general" else source_model
+            meta = {
+                "status": row.get("current_interval_status") or row.get("currentIntervalStatus"),
+                "source_model": source_model,
+                "window_start": window_start,
+                "window_end": reset_at,
+            }
+            if total is not None and usage_count is not None and total > 0:
+                used_count = max(0, min(total, usage_count))
+                remaining_count = total - used_count
                 percent_remaining = round(remaining_count / total * 100, 1)
                 remaining_text = f"{remaining_count}/{total} requests left"
                 meta.update({"used_count": used_count, "total": total})
@@ -342,20 +358,24 @@ class UsageService:
                 )
             )
 
-            weekly_total = as_int(row.get("current_weekly_total_count") or row.get("currentWeeklyTotalCount"))
-            weekly_remaining = as_int(row.get("current_weekly_usage_count") or row.get("currentWeeklyUsageCount"))
-            weekly_percent = as_float(row.get("current_weekly_remaining_percent") or row.get("currentWeeklyRemainingPercent"))
+            weekly_total = as_int(row["current_weekly_total_count"] if "current_weekly_total_count" in row else row.get("currentWeeklyTotalCount"))
+            weekly_usage = as_int(row["current_weekly_usage_count"] if "current_weekly_usage_count" in row else row.get("currentWeeklyUsageCount"))
+            weekly_percent = as_float(
+                row["current_weekly_remaining_percent"]
+                if "current_weekly_remaining_percent" in row
+                else row.get("currentWeeklyRemainingPercent")
+            )
             weekly_start = from_epoch_ms(row.get("weekly_start_time") or row.get("weeklyStartTime"))
             weekly_end = from_epoch_ms(row.get("weekly_end_time") or row.get("weeklyEndTime"))
             weekly_meta = {
-                "source_model": label,
+                "source_model": source_model,
                 "status": row.get("current_weekly_status") or row.get("currentWeeklyStatus"),
                 "window_start": weekly_start,
                 "window_end": weekly_end,
             }
-            if weekly_total is not None and weekly_remaining is not None and weekly_total > 0:
-                weekly_remaining = max(0, min(weekly_total, weekly_remaining))
-                weekly_used = weekly_total - weekly_remaining
+            if weekly_total is not None and weekly_usage is not None and weekly_total > 0:
+                weekly_used = max(0, min(weekly_total, weekly_usage))
+                weekly_remaining = weekly_total - weekly_used
                 weekly_percent = round(weekly_remaining / weekly_total * 100, 1)
                 weekly_text = f"{weekly_remaining}/{weekly_total} requests left"
                 weekly_meta.update({"used_count": weekly_used, "total": weekly_total})
@@ -774,14 +794,15 @@ class UsageService:
         return ProviderResult(provider="kimi-coding", status="ok", source=source, windows=windows, plan=str(plan).upper() if plan else None)
 
     # -------------------------------------------------------------------------
-    # xAI OAuth (Grok Pro account — identity + subscription only, no usage quota)
+    # xAI OAuth (Grok subscription account + shared weekly usage pool)
     # -------------------------------------------------------------------------
 
     def probe_xai_oauth(self) -> ProviderResult:
-        """Probe xAI OAuth for account identity and subscription state.
+        """Probe xAI OAuth for weekly usage, identity, and subscription state.
 
-        Grok usage/rate-limit endpoints reject OAuth bearer tokens, so this
-        surfaces plan, team status, ZDR status, and billing period instead.
+        The legacy /rest/rate-limits endpoint still rejects OAuth bearer
+        tokens. Grok's Usage UI now reads the shared subscription pool from a
+        gRPC-web billing endpoint that accepts the same OAuth token.
         """
         token = self._xai_oauth_token()
         headers = {
@@ -789,22 +810,30 @@ class UsageService:
             "Accept": "application/json",
             "User-Agent": "provider-usage-dashboard",
         }
-        # /v1/me — team status, ZDR
-        me_payload: dict[str, Any] = {}
+        # /v1/me — account validity. Keep this best-effort because usage and
+        # subscription endpoints are independently useful.
         try:
-            me_payload = http_json(XAI_ME_URL, headers=headers, timeout=self.config.timeout_seconds) or {}
+            http_json(XAI_ME_URL, headers=headers, timeout=self.config.timeout_seconds)
         except Exception:
             pass
-        # grok.com/rest/subscriptions — plan, billing period
+
+        # grok.com/rest/subscriptions — plan and subscription billing period.
         sub_payload: dict[str, Any] = {}
         try:
             sub_payload = http_json(XAI_SUBSCRIPTIONS_URL, headers=headers, timeout=self.config.timeout_seconds) or {}
         except Exception:
             pass
 
-        # Plan from active subscription
+        # Shared weekly pool shown by grok.com Settings -> Usage. This is an
+        # undocumented UI API, so failure must not erase valid plan data.
+        weekly_window: Window | None = None
+        try:
+            weekly_window = self._xai_weekly_window(token)
+        except Exception:
+            pass
+
         sub_list = sub_payload.get("subscriptions") if isinstance(sub_payload, dict) else None
-        windows: list[Window] = []
+        windows: list[Window] = [weekly_window] if weekly_window else []
         plan: str | None = None
         if isinstance(sub_list, list) and sub_list:
             active = next((s for s in sub_list if isinstance(s, dict) and s.get("status") == "SUBSCRIPTION_STATUS_ACTIVE"), None)
@@ -817,9 +846,7 @@ class UsageService:
                 if bp_end:
                     reset_at_str = normalize_iso(str(bp_end))
                     reset_at_dt = parse_iso(str(bp_end))
-                    days_remaining = None
-                    if reset_at_dt:
-                        days_remaining = (reset_at_dt - datetime.now(timezone.utc)).days
+                    days_remaining = (reset_at_dt - datetime.now(timezone.utc)).days if reset_at_dt else None
                     days_str = f"{days_remaining}d" if days_remaining is not None else ""
                     windows.append(
                         Window(
@@ -832,30 +859,59 @@ class UsageService:
                             meta={"billing_period_end": str(bp_end)},
                         )
                     )
-                status_label = active.get("status") or ""
-
-        # Team status from /v1/me
-        team_blocked = me_payload.get("team_blocked")
-        zdr_status = me_payload.get("zdr_status")
 
         if not windows:
-            # Always return something
-            windows.append(
-                Window(
-                    label="account",
-                    remaining_text="see details",
-                    percent_remaining=None,
-                    percent_used=None,
-                )
-            )
+            windows.append(Window(label="account", remaining_text="see details"))
 
         return ProviderResult(
             provider="xai-oauth",
             status="ok",
-            source="oauth_account_api",
+            source="oauth_usage_api+account_api" if weekly_window else "oauth_account_api",
             windows=windows,
             plan=plan,
             error=None,
+        )
+
+    def _xai_weekly_window(self, token: str) -> Window:
+        raw, response_headers = http_bytes(
+            XAI_CREDITS_URL,
+            method="POST",
+            body=b"\x00\x00\x00\x00\x00",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Origin": "https://grok.com",
+                "Referer": "https://grok.com/?_s=usage",
+                "Accept": "*/*",
+                "Content-Type": "application/grpc-web+proto",
+                "x-grpc-web": "1",
+                "x-user-agent": "connect-es/2.1.1",
+                "User-Agent": "provider-usage-dashboard",
+            },
+            timeout=self.config.timeout_seconds,
+        )
+        grpc_status = next(
+            (str(value).strip() for key, value in response_headers.items() if str(key).lower() == "grpc-status"),
+            None,
+        )
+        if grpc_status not in (None, "0"):
+            raise ProbeError(f"xAI usage API returned gRPC status {grpc_status}")
+        usage = parse_xai_billing_grpc_web(raw)
+        used = round(float(usage["percent_used"]), 1)
+        remaining = round(max(0.0, 100.0 - used), 1)
+        reset_at = usage.get("window_end")
+        return Window(
+            label="weekly",
+            percent_remaining=remaining,
+            percent_used=used,
+            remaining_text=f"{remaining:.1f}% left",
+            reset_at=reset_at,
+            reset_text=relative_reset_text(reset_at),
+            meta={
+                "window_start": usage.get("window_start"),
+                "window_end": reset_at,
+                "shared_pool": True,
+                "surface": "grok_build_billing_grpc_web",
+            },
         )
 
     def _xai_oauth_token(self) -> str:
@@ -1665,10 +1721,11 @@ function renderSecondaryWindow(provider, window) {
     </div>`;
 }
 function renderResetColumn(provider, sessionWindow, weeklyWindow, secondaries) {
+  const resetLabel = window => window.label === 'session' ? '5h' : (window.label === 'weekly' ? 'wk' : window.label);
   return `
     <div class=\"prow__reset\">
-      ${sessionWindow ? `<div>5h · <b>${esc(sessionWindow.reset_text || '—')}</b></div>` : ''}
-      ${weeklyWindow ? `<div>wk · <b>${esc(weeklyWindow.reset_text || '—')}</b></div>` : ''}
+      ${sessionWindow ? `<div>${esc(resetLabel(sessionWindow))} · <b>${esc(sessionWindow.reset_text || '—')}</b></div>` : ''}
+      ${weeklyWindow ? `<div>${esc(resetLabel(weeklyWindow))} · <b>${esc(weeklyWindow.reset_text || '—')}</b></div>` : ''}
       <div class=\"micro\">${secondaries.length ? `${secondaries.length} secondary window${secondaries.length === 1 ? '' : 's'}` : (provider.checked_at ? `checked ${esc(provider.checked_at)}` : (provider.source || ''))}</div>
     </div>`;
 }
@@ -1677,12 +1734,11 @@ function renderProvider(provider) {
   const snap = snapshotInfo(provider);
   const weeklyWindow = windowByLabel(provider, 'weekly');
   const primaryCandidates = primaryWindows(provider);
-  const sessionWindow = primaryCandidates.find(window => window !== weeklyWindow) || windowByLabel(provider, 'session');
-  const primaries = [];
-  if (sessionWindow) primaries.push(sessionWindow);
-  if (weeklyWindow) primaries.push(weeklyWindow);
-  const fallbackPrimaries = primaryCandidates.filter(window => !primaries.includes(window));
-  while (primaries.length < 2 && fallbackPrimaries.length) primaries.push(fallbackPrimaries.shift());
+  const displayOnlyLabels = new Set(['account', 'billing_period']);
+  const fallbackPrimaries = primaryCandidates.filter(window => window !== weeklyWindow && !displayOnlyLabels.has(window.label));
+  const sessionWindow = windowByLabel(provider, 'session') || fallbackPrimaries.shift() || null;
+  const secondWindow = weeklyWindow || fallbackPrimaries.shift() || null;
+  const primaries = [sessionWindow, secondWindow].filter(Boolean);
   const secondaries = secondaryWindows(provider, primaries);
   const summary = weeklySummary(provider);
   const state = providerState(provider);
@@ -1697,9 +1753,9 @@ function renderProvider(provider) {
           ${provider.plan ? `<span class=\"plan\"><b>${esc(provider.plan)}</b></span>` : ''}
         </div>
       </div>
-      ${renderPrimaryCell(provider, primaries[0], '5h window', summary)}
-      ${renderPrimaryCell(provider, primaries[1], 'weekly', summary)}
-      ${renderResetColumn(provider, sessionWindow, weeklyWindow, secondaries)}
+      ${renderPrimaryCell(provider, sessionWindow, '5h window', summary)}
+      ${renderPrimaryCell(provider, secondWindow, 'weekly', summary)}
+      ${renderResetColumn(provider, sessionWindow, secondWindow, secondaries)}
       ${provider.error ? `<div class=\"provider-error\">${esc(provider.error)}</div>` : ''}
       ${secondaries.length ? `<details class=\"secondary\"><summary>Show ${esc(secondaries.length)} secondary window${secondaries.length === 1 ? '' : 's'}</summary><div class=\"secondary__list\">${secondaries.map(window => renderSecondaryWindow(provider, window)).join('')}</div></details>` : ''}
     </article>`;
@@ -1775,6 +1831,134 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+def parse_xai_billing_grpc_web(raw: bytes, now: datetime | None = None) -> dict[str, Any]:
+    """Parse Grok's gRPC-web weekly-credit response without generated protobufs.
+
+    xAI does not publish this UI protobuf schema. We intentionally extract only
+    the stable fields needed by the dashboard: usage percent and period bounds.
+    Unknown fields are ignored so additive schema changes remain harmless.
+    """
+    payloads: list[bytes] = []
+    grpc_status: str | None = None
+    index = 0
+    framed = False
+    while index + 5 <= len(raw):
+        flags = raw[index]
+        length = int.from_bytes(raw[index + 1:index + 5], "big")
+        end = index + 5 + length
+        if end > len(raw):
+            break
+        framed = True
+        frame = raw[index + 5:end]
+        if flags & 0x80:
+            for line in frame.decode("utf-8", errors="replace").splitlines():
+                key, separator, value = line.partition(":")
+                if separator and key.strip().lower() == "grpc-status":
+                    grpc_status = value.strip()
+        else:
+            payloads.append(frame)
+        index = end
+    if framed and index != len(raw):
+        raise ProbeError("xAI usage API returned malformed gRPC-web frames")
+    if grpc_status not in (None, "0"):
+        raise ProbeError(f"xAI usage API returned gRPC status {grpc_status}")
+    if not payloads and raw and raw[0] >> 3:
+        payloads = [raw]
+    if not payloads:
+        raise ProbeError("xAI usage API returned no protobuf payload")
+
+    fixed32: list[tuple[tuple[int, ...], float, int]] = []
+    varints: list[tuple[tuple[int, ...], int]] = []
+    order = 0
+
+    def read_varint(data: bytes, offset: int) -> tuple[int | None, int]:
+        value = 0
+        shift = 0
+        while offset < len(data) and shift < 64:
+            byte = data[offset]
+            offset += 1
+            value |= (byte & 0x7F) << shift
+            if byte & 0x80 == 0:
+                return value, offset
+            shift += 7
+        return None, offset
+
+    def scan(data: bytes, path: tuple[int, ...] = (), depth: int = 0) -> None:
+        nonlocal order
+        offset = 0
+        while offset < len(data):
+            field_start = offset
+            key, offset = read_varint(data, offset)
+            if not key:
+                offset = field_start + 1
+                continue
+            field_number, wire_type = key >> 3, key & 0x07
+            field_path = path + (field_number,)
+            if wire_type == 0:
+                value, offset = read_varint(data, offset)
+                if value is not None:
+                    varints.append((field_path, value))
+            elif wire_type == 1:
+                if offset + 8 > len(data):
+                    break
+                offset += 8
+            elif wire_type == 2:
+                length, offset = read_varint(data, offset)
+                if length is None or length > len(data) - offset:
+                    offset = field_start + 1
+                    continue
+                nested = data[offset:offset + length]
+                if depth < 4:
+                    scan(nested, field_path, depth + 1)
+                offset += length
+            elif wire_type == 5:
+                if offset + 4 > len(data):
+                    break
+                value = struct.unpack_from("<f", data, offset)[0]
+                fixed32.append((field_path, value, order))
+                order += 1
+                offset += 4
+            else:
+                offset = field_start + 1
+
+    for payload in payloads:
+        scan(payload)
+
+    candidates = [
+        item for item in fixed32
+        if item[0][-1:] == (1,) and math.isfinite(item[1]) and 0.0 <= item[1] <= 100.0
+    ]
+    exact = [item for item in candidates if item[0] == (1, 1)]
+    picked = min(exact or candidates, key=lambda item: (len(item[0]), item[2])) if (exact or candidates) else None
+
+    epoch_now = int((now or datetime.now(timezone.utc)).timestamp())
+    timestamp_fields = {
+        path: value for path, value in varints
+        if 1_700_000_000 <= value <= 2_100_000_000
+    }
+    start_epoch = timestamp_fields.get((1, 4, 1)) or timestamp_fields.get((1, 8, 2, 1))
+    end_epoch = timestamp_fields.get((1, 5, 1)) or timestamp_fields.get((1, 8, 3, 1))
+    if end_epoch is None:
+        future = sorted(value for value in timestamp_fields.values() if value > epoch_now)
+        end_epoch = future[0] if future else None
+
+    has_usage_period = any(
+        (path[:2] == (1, 6)) or (path == (1, 8, 1) and value in (1, 2))
+        for path, value in varints
+    )
+    percent_used = picked[1] if picked else (
+        0.0 if not fixed32 and has_usage_period and end_epoch else None
+    )
+    if percent_used is None:
+        raise ProbeError("xAI usage API response contained no recognized usage percent")
+
+    return {
+        "percent_used": round(float(percent_used), 3),
+        "window_start": from_epoch_maybe(start_epoch),
+        "window_end": from_epoch_maybe(end_epoch),
+    }
 
 
 def http_json_with_headers(url: str, *, headers: dict[str, str] | None = None, method: str = "GET", body: Any = None, timeout: int = DEFAULT_TIMEOUT) -> tuple[dict[str, Any], dict[str, str]]:
