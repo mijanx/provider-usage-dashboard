@@ -108,6 +108,8 @@ port: 9876
                             "model_name": "general",
                             "current_interval_remaining_percent": 42.5,
                             "current_interval_status": "available",
+                            "start_time": 1783677600000,
+                            "end_time": 1783695600000,
                             "current_weekly_remaining_percent": 80,
                             "current_weekly_status": "available",
                         }
@@ -126,9 +128,45 @@ port: 9876
 
             self.assertEqual(seen["url"], "https://api.minimax.io/v1/token_plan/remains")
             self.assertEqual(result.status, "ok")
+            self.assertEqual(result.windows[0].label, "session")
             self.assertEqual(result.windows[0].remaining_text, "42.5% left")
+            self.assertEqual(result.windows[0].meta["source_model"], "general")
+            self.assertEqual(result.windows[0].meta["window_start"], "2026-07-10T10:00:00Z")
             self.assertEqual(result.windows[-1].label, "weekly")
             self.assertEqual(result.windows[-1].remaining_text, "80.0% left")
+
+    def test_minimax_usage_counts_are_used_not_remaining(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "auth.json"
+            auth_path.write_text(
+                json.dumps({"credential_pool": {"minimax": [{"access_token": "token"}]}}),
+                encoding="utf-8",
+            )
+            service = app.UsageService(app.AppConfig(auth_path=str(auth_path)))
+            payload = {
+                "base_resp": {"status_code": 0},
+                "model_remains": [{
+                    "model_name": "general",
+                    "current_interval_total_count": 10,
+                    "current_interval_usage_count": 3,
+                    "current_interval_remaining_percent": 1,
+                    "current_weekly_total_count": 20,
+                    "current_weekly_usage_count": 5,
+                    "current_weekly_remaining_percent": 1,
+                }],
+            }
+            old_http_json = app.http_json
+            try:
+                app.http_json = lambda *args, **kwargs: payload
+                result = service.probe_minimax()
+            finally:
+                app.http_json = old_http_json
+
+            self.assertEqual(result.windows[0].percent_remaining, 70.0)
+            self.assertEqual(result.windows[0].remaining_text, "7/10 requests left")
+            self.assertEqual(result.windows[0].meta["used_count"], 3)
+            self.assertEqual(result.windows[-1].percent_remaining, 75.0)
+            self.assertEqual(result.windows[-1].remaining_text, "15/20 requests left")
 
     def test_claude_statusline_weekly_does_not_override_api_aggregate(self):
         service = app.UsageService(app.AppConfig(auth_path="/tmp/nonexistent-auth.json"))

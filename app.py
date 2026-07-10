@@ -315,16 +315,29 @@ class UsageService:
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            label = str(row.get("model_name") or row.get("modelName") or "model")
-            total = as_int(row.get("current_interval_total_count") or row.get("currentIntervalTotalCount"))
-            remaining_count = as_int(row.get("current_interval_usage_count") or row.get("currentIntervalUsageCount"))
+            source_model = str(row.get("model_name") or row.get("modelName") or "model")
+            total = as_int(row["current_interval_total_count"] if "current_interval_total_count" in row else row.get("currentIntervalTotalCount"))
+            usage_count = as_int(row["current_interval_usage_count"] if "current_interval_usage_count" in row else row.get("currentIntervalUsageCount"))
             percent_remaining = as_float(row.get("current_interval_remaining_percent") or row.get("currentIntervalRemainingPercent"))
+            window_start = from_epoch_ms(row.get("start_time") or row.get("startTime"))
             reset_at = from_epoch_ms(row.get("end_time") or row.get("endTime"))
-            meta = {"status": row.get("current_interval_status") or row.get("currentIntervalStatus")}
-            used_count = None
-            if total is not None and remaining_count is not None and total > 0:
-                remaining_count = max(0, min(total, remaining_count))
-                used_count = total - remaining_count
+            interval_seconds = None
+            if window_start and reset_at:
+                start_dt = parse_iso(window_start)
+                end_dt = parse_iso(reset_at)
+                if start_dt is not None and end_dt is not None:
+                    interval_seconds = (end_dt - start_dt).total_seconds()
+            is_five_hour_window = source_model == "general" and interval_seconds == 5 * 60 * 60
+            label = "session" if is_five_hour_window else source_model
+            meta = {
+                "status": row.get("current_interval_status") or row.get("currentIntervalStatus"),
+                "source_model": source_model,
+                "window_start": window_start,
+                "window_end": reset_at,
+            }
+            if total is not None and usage_count is not None and total > 0:
+                used_count = max(0, min(total, usage_count))
+                remaining_count = total - used_count
                 percent_remaining = round(remaining_count / total * 100, 1)
                 remaining_text = f"{remaining_count}/{total} requests left"
                 meta.update({"used_count": used_count, "total": total})
@@ -345,20 +358,20 @@ class UsageService:
                 )
             )
 
-            weekly_total = as_int(row.get("current_weekly_total_count") or row.get("currentWeeklyTotalCount"))
-            weekly_remaining = as_int(row.get("current_weekly_usage_count") or row.get("currentWeeklyUsageCount"))
+            weekly_total = as_int(row["current_weekly_total_count"] if "current_weekly_total_count" in row else row.get("currentWeeklyTotalCount"))
+            weekly_usage = as_int(row["current_weekly_usage_count"] if "current_weekly_usage_count" in row else row.get("currentWeeklyUsageCount"))
             weekly_percent = as_float(row.get("current_weekly_remaining_percent") or row.get("currentWeeklyRemainingPercent"))
             weekly_start = from_epoch_ms(row.get("weekly_start_time") or row.get("weeklyStartTime"))
             weekly_end = from_epoch_ms(row.get("weekly_end_time") or row.get("weeklyEndTime"))
             weekly_meta = {
-                "source_model": label,
+                "source_model": source_model,
                 "status": row.get("current_weekly_status") or row.get("currentWeeklyStatus"),
                 "window_start": weekly_start,
                 "window_end": weekly_end,
             }
-            if weekly_total is not None and weekly_remaining is not None and weekly_total > 0:
-                weekly_remaining = max(0, min(weekly_total, weekly_remaining))
-                weekly_used = weekly_total - weekly_remaining
+            if weekly_total is not None and weekly_usage is not None and weekly_total > 0:
+                weekly_used = max(0, min(weekly_total, weekly_usage))
+                weekly_remaining = weekly_total - weekly_used
                 weekly_percent = round(weekly_remaining / weekly_total * 100, 1)
                 weekly_text = f"{weekly_remaining}/{weekly_total} requests left"
                 weekly_meta.update({"used_count": weekly_used, "total": weekly_total})
