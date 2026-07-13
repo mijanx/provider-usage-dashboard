@@ -691,7 +691,8 @@ class UsageService:
                 )
                 rate_limit = payload.get("rate_limit") if isinstance(payload, dict) else {}
                 windows: list[Window] = []
-                for label, body_key, header_key in [
+                seen_labels: set[str] = set()
+                for default_label, body_key, header_key in [
                     ("session", "primary_window", "x-codex-primary-used-percent"),
                     ("weekly", "secondary_window", "x-codex-secondary-used-percent"),
                 ]:
@@ -701,6 +702,20 @@ class UsageService:
                         used_pct = as_float(entry.get("used_percent"))
                     if used_pct is None:
                         continue
+                    window_seconds = as_int(entry.get("limit_window_seconds"))
+                    if window_seconds is not None and 0 < window_seconds <= 8 * 60 * 60:
+                        label = "session"
+                    elif window_seconds is not None and 5 * 24 * 60 * 60 <= window_seconds <= 9 * 24 * 60 * 60:
+                        label = "weekly"
+                    elif window_seconds is not None:
+                        label = f"{round(window_seconds / 3600, 1):g}h"
+                    else:
+                        # Backward compatibility for the older Codex response,
+                        # where slot position was the only window semantic.
+                        label = default_label
+                    if label in seen_labels:
+                        continue
+                    seen_labels.add(label)
                     remaining_pct = round(max(0.0, min(100.0, 100.0 - used_pct)), 1)
                     reset_at = from_epoch_maybe(entry.get("reset_at"))
                     if reset_at is None and entry.get("reset_after_seconds") is not None:
@@ -713,6 +728,7 @@ class UsageService:
                             remaining_text=f"{remaining_pct:.1f}% left",
                             reset_at=reset_at,
                             reset_text=relative_reset_text(reset_at),
+                            meta={"window_seconds": window_seconds, "source_slot": body_key},
                         )
                     )
                 credits_balance = header_float(headers.get("x-codex-credits-balance"))
@@ -1856,13 +1872,13 @@ function paceState(summary, provider) {
   if (summary.ahead) return { cls: 'warn', label: `ahead ${pct(summary.delta)}` };
   return { cls: 'ok', label: `on pace ${pct(Math.abs(summary.delta))}` };
 }
-function renderPrimaryCell(provider, window, fallbackLabel, summary) {
+function renderPrimaryCell(provider, window, fallbackLabel, summary, noWindowMessage = null) {
   if (!window) {
     return `
       <div class=\"pcell\">
-        <div class=\"pcell__head\"><span class=\"pcell__label\">${esc(fallbackLabel)}</span><span class=\"pcell__values\">—</span></div>
-        <div class=\"pacebar pacebar--stale\"><div class=\"pacebar__fill\" style=\"width:0%\"></div></div>
-        <div class=\"pcell__resets\">No window data</div>
+        <div class=\"pcell__head\"><span class=\"pcell__label\">${esc(fallbackLabel)}</span><span class=\"pcell__values\">${esc(noWindowMessage || '—')}</span></div>
+        ${noWindowMessage ? '' : `<div class=\"pacebar pacebar--stale\"><div class=\"pacebar__fill\" style=\"width:0%\"></div></div>`}
+        <div class=\"pcell__resets\">${esc(noWindowMessage || 'No window data')}</div>
       </div>`;
   }
   const tone = toneForWindow(provider, window);
@@ -1917,7 +1933,9 @@ function renderProvider(provider) {
   const primaryCandidates = primaryWindows(provider);
   const displayOnlyLabels = new Set(['account', 'billing_period']);
   const fallbackPrimaries = primaryCandidates.filter(window => window !== weeklyWindow && !displayOnlyLabels.has(window.label));
-  const sessionWindow = windowByLabel(provider, 'session') || fallbackPrimaries.shift() || null;
+  const explicitSessionWindow = windowByLabel(provider, 'session');
+  const weeklyOnlyQuota = Boolean(weeklyWindow && !explicitSessionWindow && ['openai-codex', 'xai-oauth'].includes(provider.provider));
+  const sessionWindow = explicitSessionWindow || (weeklyOnlyQuota ? null : fallbackPrimaries.shift()) || null;
   const secondWindow = weeklyWindow || fallbackPrimaries.shift() || null;
   const primaries = [sessionWindow, secondWindow].filter(Boolean);
   const secondaries = secondaryWindows(provider, primaries);
@@ -1934,7 +1952,7 @@ function renderProvider(provider) {
           ${provider.plan ? `<span class=\"plan\"><b>${esc(provider.plan)}</b></span>` : ''}
         </div>
       </div>
-      ${renderPrimaryCell(provider, sessionWindow, '5h window', summary)}
+      ${renderPrimaryCell(provider, sessionWindow, '5h window', summary, weeklyOnlyQuota ? 'No 5h quota' : null)}
       ${renderPrimaryCell(provider, secondWindow, 'weekly', summary)}
       ${renderResetColumn(provider, sessionWindow, secondWindow, secondaries)}
       ${provider.error ? `<div class=\"provider-error\">${esc(provider.error)}</div>` : ''}
