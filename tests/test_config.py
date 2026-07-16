@@ -61,6 +61,56 @@ port: 9876
                 else:
                     os.environ["PUD_TMP"] = old
 
+    def test_load_config_parses_disabled_providers(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yaml"
+            cfg_path.write_text(
+                "disabled_providers: zai, kimi-coding, xai-oauth\n",
+                encoding="utf-8",
+            )
+
+            cfg = app.load_config(str(cfg_path))
+
+            self.assertEqual(
+                cfg.disabled_providers,
+                frozenset({"zai", "kimi-coding", "xai-oauth"}),
+            )
+
+    def test_load_config_rejects_unknown_disabled_provider(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.yaml"
+            cfg_path.write_text("disabled_providers: typo-provider\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "unknown disabled provider: typo-provider"):
+                app.load_config(str(cfg_path))
+
+    def test_collect_all_skips_disabled_providers_and_summary_excludes_them(self):
+        service = app.UsageService(
+            app.AppConfig(
+                auth_path="/tmp/private-auth.json",
+                disabled_providers=frozenset({"zai", "kimi-coding", "xai-oauth"}),
+            )
+        )
+        probed = []
+
+        def fake_probe(provider, fn):
+            probed.append(provider)
+            return app.ProviderResult(provider=provider, status="ok", source="test")
+
+        old_safe_probe = service._safe_probe
+        try:
+            service._safe_probe = fake_probe
+            payload = service.collect_all()
+        finally:
+            service._safe_probe = old_safe_probe
+
+        self.assertEqual(probed, ["minimax", "openai-codex", "anthropic"])
+        self.assertEqual(
+            [provider["provider"] for provider in payload["providers"]],
+            ["minimax", "openai-codex", "anthropic"],
+        )
+        self.assertEqual(payload["summary"], {"ok": 3, "degraded": 0, "total": 3, "errors": 0})
+
     def test_require_access_token_can_resolve_env_sourced_credentials(self):
         with tempfile.TemporaryDirectory() as td:
             cfg = app.AppConfig(auth_path=str(Path(td) / "auth.json"))

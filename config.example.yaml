@@ -9,3 +9,6 @@ kimi_credentials_path: ~/.kimi/credentials/kimi-code.json
 cache_path: ./cache/usage-cache.json
 timeout_seconds: 15
 refresh_seconds: 60
+# Optional comma-separated provider IDs to omit from probes, cards, and summary totals.
+# Valid IDs: minimax, zai, openai-codex, anthropic, kimi-coding, xai-oauth
+# disabled_providers: zai,kimi-coding,xai-oauth
