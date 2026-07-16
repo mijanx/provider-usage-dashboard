@@ -24,6 +24,15 @@ DEFAULT_AUTH_PATH = os.environ.get("PROVIDER_USAGE_AUTH_PATH", str(Path.home() /
 DEFAULT_TIMEOUT = 15
 DEFAULT_REFRESH_SECONDS = 60
 CLAUDE_STATUSLINE_MAX_AGE_SECONDS = 30 * 60
+PROVIDER_PROBES = (
+    ("minimax", "probe_minimax"),
+    ("zai", "probe_zai"),
+    ("openai-codex", "probe_codex"),
+    ("anthropic", "probe_claude"),
+    ("kimi-coding", "probe_kimi"),
+    ("xai-oauth", "probe_xai_oauth"),
+)
+KNOWN_PROVIDERS = frozenset(provider for provider, _ in PROVIDER_PROBES)
 
 CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 CODEX_REFRESH_URL = "https://auth.openai.com/oauth/token"
@@ -57,6 +66,7 @@ class AppConfig:
     claude_statusline_path: str = os.environ.get("CLAUDE_STATUSLINE_PATH", str(Path.home() / ".claude" / "statusline-rate-limits.json"))
     cache_path: str = os.environ.get("PROVIDER_USAGE_CACHE_PATH", str(Path.cwd() / "cache" / "usage-cache.json"))
     kimi_credentials_path: str = os.environ.get("KIMI_CREDENTIALS_PATH", str(Path.home() / ".kimi" / "credentials" / "kimi-code.json"))
+    disabled_providers: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -265,12 +275,9 @@ class UsageService:
     def collect_all(self) -> dict[str, Any]:
         now = iso_now()
         results = [
-            self._safe_probe("minimax", self.probe_minimax),
-            self._safe_probe("zai", self.probe_zai),
-            self._safe_probe("openai-codex", self.probe_codex),
-            self._safe_probe("anthropic", self.probe_claude),
-            self._safe_probe("kimi-coding", self.probe_kimi),
-            self._safe_probe("xai-oauth", self.probe_xai_oauth),
+            self._safe_probe(provider, getattr(self, method_name))
+            for provider, method_name in PROVIDER_PROBES
+            if provider not in self.config.disabled_providers
         ]
         ok = sum(1 for result in results if result.status == "ok")
         degraded = sum(1 for result in results if result.status in {"stale", "rate_limited", "auth_required"})
@@ -2185,7 +2192,23 @@ def load_config(path: str | None) -> AppConfig:
         claude_statusline_path=expand_path(str(raw.get("claude_statusline_path", AppConfig.claude_statusline_path))),
         cache_path=expand_path(str(raw.get("cache_path", AppConfig.cache_path))),
         kimi_credentials_path=expand_path(str(raw.get("kimi_credentials_path", AppConfig.kimi_credentials_path))),
+        disabled_providers=parse_disabled_providers(raw.get("disabled_providers")),
     )
+
+
+def parse_disabled_providers(value: Any) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    if not isinstance(value, str):
+        raise ValueError("disabled_providers must be a comma-separated string")
+
+    candidates = value.split(",")
+    disabled = frozenset(str(candidate).strip() for candidate in candidates if str(candidate).strip())
+    unknown = sorted(disabled.difference(KNOWN_PROVIDERS))
+    if unknown:
+        label = "provider" if len(unknown) == 1 else "providers"
+        raise ValueError(f"unknown disabled {label}: {', '.join(unknown)}")
+    return disabled
 
 
 def parse_simple_yaml(text: str) -> dict[str, Any]:

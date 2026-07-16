@@ -79,6 +79,7 @@ Supported keys:
 - `cache_path`
 - `timeout_seconds`
 - `refresh_seconds`
+- `disabled_providers` — optional comma-separated IDs to omit from probes, cards, and summary totals. Valid IDs are `minimax`, `zai`, `openai-codex`, `anthropic`, `kimi-coding`, and `xai-oauth`. Unknown IDs fail configuration validation instead of being silently ignored.
 
 Environment overrides for defaults:
 
