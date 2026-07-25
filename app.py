@@ -219,27 +219,41 @@ class AuthStore:
             return expires_at - datetime.now(timezone.utc) > timedelta(minutes=10)
         return bool(self.resolve_env_credential(entry))
 
-    def credentials(self, provider: str) -> list[dict[str, Any]]:
+    def credentials(self, provider: str, *aliases: str) -> list[dict[str, Any]]:
+        providers = (provider, *aliases)
         profile_exists = self.path.exists()
-        profile_entries = self._document_credentials(self.path, self.load(), provider) if profile_exists else []
+        profile_entries = (
+            [
+                (alias_rank, entry)
+                for alias_rank, provider_name in enumerate(providers)
+                for entry in self._document_credentials(self.path, self.load(), provider_name)
+            ]
+            if profile_exists
+            else []
+        )
 
         # This is fallback, not a competing global pool: when the profile has usable
         # authority, do not even read a malformed or unavailable global auth store.
-        if any(self._has_auth_material(entry) for entry in profile_entries):
+        if any(self._has_auth_material(entry) for _, entry in profile_entries):
             entries = profile_entries
         else:
-            fallback_entries: list[dict[str, Any]] = []
+            fallback_entries: list[tuple[int, dict[str, Any]]] = []
             fallback = self._global_fallback_path()
             if fallback is not None:
                 fallback_data = self._read_document(fallback, "credential fallback auth file could not be read")
-                fallback_entries = self._document_credentials(fallback, fallback_data, provider)
+                fallback_entries = [
+                    (alias_rank, entry)
+                    for alias_rank, provider_name in enumerate(providers)
+                    for entry in self._document_credentials(fallback, fallback_data, provider_name)
+                ]
             if not profile_exists and fallback is None:
                 self.load()  # Preserve the configured-path error when no auth store exists.
             entries = profile_entries + fallback_entries
         if not entries:
             return []
 
-        def sort_key(entry: dict[str, Any]) -> tuple[int, int, int, int]:
+        def sort_key(ranked_entry: tuple[int, dict[str, Any]]) -> tuple[int, int, int, int, int]:
+            alias_rank, entry = ranked_entry
             status = str(entry.get("last_status") or "").lower()
             error_code = as_int(entry.get("last_error_code"))
             error_reason = str(entry.get("last_error_reason") or "").lower()
@@ -260,7 +274,7 @@ class AuthStore:
                 health_rank = 1
             refresh_hint = parse_iso(entry.get("last_refresh") or entry.get("last_status_at"))
             freshness_rank = -int(refresh_hint.timestamp()) if refresh_hint is not None else 0
-            return usable_rank, health_rank, priority, freshness_rank
+            return usable_rank, alias_rank, health_rank, priority, freshness_rank
 
         # Rank before deduplicating: stripped profile credential shells may have the
         # same identity as a healthy global credential. Stable sorting still makes
@@ -268,7 +282,7 @@ class AuthStore:
         ordered = sorted(entries, key=sort_key)
         deduplicated: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
-        for entry in ordered:
+        for _, entry in ordered:
             identity = (str(entry.get("id") or ""), str(entry.get("source") or ""))
             if identity == ("", "") or identity not in seen:
                 seen.add(identity)
@@ -298,8 +312,8 @@ class AuthStore:
             "last_status": "ok" if access_token else None,
         }
 
-    def first_credential(self, provider: str) -> dict[str, Any] | None:
-        ordered = self.credentials(provider)
+    def first_credential(self, provider: str, *aliases: str) -> dict[str, Any] | None:
+        ordered = self.credentials(provider, *aliases)
         return ordered[0] if ordered else None
 
     def update_credential(
@@ -551,7 +565,7 @@ class UsageService:
         return ProviderResult(provider="minimax", status="ok", source="api", windows=windows)
 
     def probe_zai(self) -> ProviderResult:
-        credential = self.auth.first_credential("custom:zai") or self.auth.first_credential("zai")
+        credential = self.auth.first_credential("custom:zai", "zai")
         if credential is None:
             raise ProbeError("no Z.ai credential found in dev auth.json")
         token = self._require_access_token(credential, "zai")

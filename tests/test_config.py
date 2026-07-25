@@ -404,6 +404,128 @@ port: 9876
 
             self.assertEqual([entry["id"] for entry in credentials], ["profile"])
 
+    def test_zai_aliases_exhaust_profile_scope_before_global_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "zai": [
+                                {"id": "profile-zai", "source": "api_key", "access_token": "profile-token"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "custom:zai": [
+                                {"id": "global-zai", "source": "api_key", "access_token": "global-token"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credential = app.AuthStore(str(profile_path)).first_credential("custom:zai", "zai")
+
+            self.assertIsNotNone(credential)
+            self.assertEqual(credential["id"], "profile-zai")
+            self.assertEqual(credential["access_token"], "profile-token")
+            self.assertEqual(credential["__auth_path"], str(profile_path))
+
+    def test_zai_primary_provider_precedes_alias_within_profile_scope(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "custom:zai": [
+                                {"id": "primary", "source": "api_key", "priority": 50, "access_token": "primary-token"}
+                            ],
+                            "zai": [
+                                {"id": "alias", "source": "api_key", "priority": 1, "access_token": "alias-token"}
+                            ],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credential = app.AuthStore(str(profile_path)).first_credential("custom:zai", "zai")
+
+            self.assertIsNotNone(credential)
+            self.assertEqual(credential["id"], "primary")
+            self.assertEqual(credential["access_token"], "primary-token")
+
+    def test_zai_usable_alias_precedes_unusable_primary_shell(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "custom:zai": [
+                                {"id": "primary-shell", "source": "api_key", "priority": 1}
+                            ],
+                            "zai": [
+                                {"id": "alias", "source": "api_key", "priority": 50, "access_token": "alias-token"}
+                            ],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credential = app.AuthStore(str(profile_path)).first_credential("custom:zai", "zai")
+
+            self.assertIsNotNone(credential)
+            self.assertEqual(credential["id"], "alias")
+            self.assertEqual(credential["access_token"], "alias-token")
+
+    def test_zai_aliases_use_global_scope_when_profile_aliases_are_unusable(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(
+                json.dumps({"credential_pool": {"zai": [{"id": "profile-shell", "source": "api_key"}]}}),
+                encoding="utf-8",
+            )
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "custom:zai": [
+                                {"id": "global-zai", "source": "api_key", "access_token": "global-token"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credential = app.AuthStore(str(profile_path)).first_credential("custom:zai", "zai")
+
+            self.assertIsNotNone(credential)
+            self.assertEqual(credential["id"], "global-zai")
+            self.assertEqual(credential["access_token"], "global-token")
+            self.assertEqual(credential["__auth_path"], str(global_path))
+
     def test_expired_access_only_profile_credential_uses_global_fallback(self):
         with tempfile.TemporaryDirectory() as td:
             hermes_root = Path(td) / ".hermes"
