@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import json
 import os
@@ -11,6 +12,14 @@ spec = importlib.util.spec_from_file_location("provider_app", APP_PATH)
 app = importlib.util.module_from_spec(spec)
 sys.modules["provider_app"] = app
 spec.loader.exec_module(app)
+
+
+def jwt_with_exp(exp: int) -> str:
+    def encode(value):
+        raw = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{encode({'alg': 'none'})}.{encode({'exp': exp})}.signature"
 
 
 class ConfigTests(unittest.TestCase):
@@ -394,6 +403,85 @@ port: 9876
             credentials = app.AuthStore(str(profile_path)).credentials("openai-codex")
 
             self.assertEqual([entry["id"] for entry in credentials], ["profile"])
+
+    def test_expired_access_only_profile_credential_uses_global_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            expired_token = jwt_with_exp(int(app.datetime.now(app.timezone.utc).timestamp()) - 60)
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {"id": "profile", "source": "device_code", "access_token": expired_token}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {"id": "global", "source": "device_code", "access_token": "global-token"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credentials = app.AuthStore(str(profile_path)).credentials("openai-codex")
+
+            self.assertEqual(credentials[0]["id"], "global")
+            self.assertEqual(credentials[0]["access_token"], "global-token")
+            self.assertEqual(credentials[0]["__auth_path"], str(global_path))
+
+    def test_expired_profile_credential_with_refresh_token_keeps_authority(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            expired_token = jwt_with_exp(int(app.datetime.now(app.timezone.utc).timestamp()) - 60)
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {
+                                    "id": "profile",
+                                    "source": "device_code",
+                                    "access_token": expired_token,
+                                    "refresh_token": "profile-refresh",
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (hermes_root / "auth.json").write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {"id": "global", "source": "device_code", "access_token": "global-token"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credentials = app.AuthStore(str(profile_path)).credentials("openai-codex")
+
+            self.assertEqual([entry["id"] for entry in credentials], ["profile"])
+            self.assertEqual(credentials[0]["refresh_token"], "profile-refresh")
 
     def test_usable_profile_credentials_ignore_malformed_global_fallback(self):
         with tempfile.TemporaryDirectory() as td:

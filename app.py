@@ -208,8 +208,15 @@ class AuthStore:
         return prepared
 
     def _has_auth_material(self, entry: dict[str, Any]) -> bool:
-        if entry.get("access_token") or entry.get("refresh_token"):
+        if entry.get("refresh_token"):
             return True
+        access_token = entry.get("access_token")
+        if access_token:
+            token_exp = as_int(jwt_claim(access_token, "exp"))
+            if token_exp is None:
+                return True
+            expires_at = datetime.fromtimestamp(token_exp, tz=timezone.utc)
+            return expires_at - datetime.now(timezone.utc) > timedelta(minutes=10)
         return bool(self.resolve_env_credential(entry))
 
     def credentials(self, provider: str) -> list[dict[str, Any]]:
