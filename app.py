@@ -307,7 +307,8 @@ class AuthStore:
             "priority": -1,
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "id_token": provider_data.get("id_token") or tokens.get("id_token"),
+            "id_token": provider_data["id_token"] if "id_token" in provider_data else tokens.get("id_token"),
+            "expires_at_ms": provider_data.get("expires_at_ms") or tokens.get("expires_at_ms"),
             "last_refresh": provider_data.get("last_refresh"),
             "last_status": "ok" if access_token else None,
         }
@@ -329,6 +330,40 @@ class AuthStore:
             target_path,
             "credential source auth file could not be read",
         )
+        if credential_id == f"__provider__:{provider}":
+            providers = data.get("providers")
+            provider_data = providers.get(provider) if isinstance(providers, dict) else None
+            if not isinstance(provider_data, dict):
+                raise ProbeError(f"provider singleton missing for {provider}")
+
+            credential_updates = {
+                key: value
+                for key, value in updates.items()
+                if key in {"access_token", "refresh_token", "id_token", "expires_at_ms"}
+            }
+            metadata_updates = {key: value for key, value in updates.items() if key not in credential_updates}
+            tokens = provider_data.get("tokens")
+            for key, value in credential_updates.items():
+                updated_existing = False
+                if key in provider_data:
+                    provider_data[key] = value
+                    updated_existing = True
+                if isinstance(tokens, dict) and key in tokens:
+                    tokens[key] = value
+                    updated_existing = True
+                if not updated_existing:
+                    if isinstance(tokens, dict):
+                        tokens[key] = value
+                    else:
+                        provider_data[key] = value
+            provider_data.update(metadata_updates)
+            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save_source_document(target_path, data)
+            refreshed = self._provider_singleton_credential(data, provider)
+            if refreshed is None:
+                raise ProbeError(f"provider singleton missing for {provider}")
+            return {**refreshed, "__auth_path": str(target_path)}
+
         pool = data.get("credential_pool", {}).get(provider)
         if not isinstance(pool, list):
             raise ProbeError(f"credential pool missing for {provider}")
@@ -336,15 +371,18 @@ class AuthStore:
             if isinstance(entry, dict) and entry.get("id") == credential_id:
                 entry.update(updates)
                 data["updated_at"] = datetime.now(timezone.utc).isoformat()
-                if target_path == self.path:
-                    self.save(data)
-                else:
-                    try:
-                        target_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-                    except OSError:
-                        raise ProbeError("credential source auth file could not be updated") from None
+                self._save_source_document(target_path, data)
                 return {**entry, "__auth_path": str(target_path)}
         raise ProbeError(f"credential {credential_id} not found for {provider}")
+
+    def _save_source_document(self, target_path: Path, data: dict[str, Any]) -> None:
+        if target_path == self.path:
+            self.save(data)
+            return
+        try:
+            target_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        except OSError:
+            raise ProbeError("credential source auth file could not be updated") from None
 
 
 class UsageService:
@@ -1231,15 +1269,13 @@ class UsageService:
         updates = {
             "access_token": access_token,
             "refresh_token": payload.get("refresh_token") or refresh_token,
+            **({"id_token": payload["id_token"]} if "id_token" in payload else {}),
             "last_refresh": iso_now(),
             "last_status": "ok",
             "last_error_code": None,
             "last_error_reason": None,
             "last_error_message": None,
         }
-        if str(credential.get("id") or "").startswith("__provider__:"):
-            credential.update(updates)
-            return credential
         return self.auth.update_credential(
             "openai-codex",
             str(credential["id"]),
@@ -1278,7 +1314,9 @@ class UsageService:
         updates = {
             "access_token": access_token,
             "refresh_token": payload.get("refresh_token") or refresh_token,
+            **({"id_token": payload["id_token"]} if "id_token" in payload else {}),
             "expires_at_ms": int((time.time() + expires_in) * 1000) if expires_in else credential.get("expires_at_ms"),
+            "last_refresh": iso_now(),
             "last_status": "ok",
             "last_error_code": None,
             "last_error_reason": None,

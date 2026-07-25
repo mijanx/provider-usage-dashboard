@@ -724,6 +724,176 @@ port: 9876
             )
             self.assertEqual(json.loads(profile_path.read_text()), {"credential_pool": {}})
 
+    def test_codex_refresh_persists_global_provider_singleton_tokens(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(json.dumps({"credential_pool": {}}), encoding="utf-8")
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "openai-codex": {
+                                "auth_mode": "oauth",
+                                "tokens": {
+                                    "access_token": jwt_with_exp(1),
+                                    "refresh_token": "old-refresh",
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = app.UsageService(app.AppConfig(auth_path=str(profile_path)))
+            credential = service.auth.credentials("openai-codex")[0]
+            old_http_json = app.http_json
+            try:
+                app.http_json = lambda *args, **kwargs: {
+                    "access_token": "new-access",
+                    "refresh_token": "new-refresh",
+                    "id_token": "new-id-token",
+                }
+                refreshed = service._refresh_codex_if_needed(credential)
+            finally:
+                app.http_json = old_http_json
+
+            stored = json.loads(global_path.read_text(encoding="utf-8"))
+            provider = stored["providers"]["openai-codex"]
+            self.assertEqual(refreshed["access_token"], "new-access")
+            self.assertEqual(provider["tokens"]["access_token"], "new-access")
+            self.assertEqual(provider["tokens"]["refresh_token"], "new-refresh")
+            self.assertEqual(provider["tokens"]["id_token"], "new-id-token")
+            self.assertEqual(refreshed["id_token"], "new-id-token")
+            self.assertIn("last_refresh", provider)
+            self.assertEqual(json.loads(profile_path.read_text()), {"credential_pool": {}})
+
+    def test_provider_singleton_refresh_preserves_existing_root_token_location(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "openai-codex": {
+                                "access_token": "old-access",
+                                "refresh_token": "old-refresh",
+                                "id_token": "old-id-token",
+                                "tokens": {},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = app.AuthStore(str(auth_path))
+            credential = store.credentials("openai-codex")[0]
+
+            store.update_credential(
+                "openai-codex",
+                credential["id"],
+                {"access_token": "new-access", "refresh_token": "new-refresh", "id_token": False},
+                auth_path=credential["__auth_path"],
+            )
+
+            stored = json.loads(auth_path.read_text(encoding="utf-8"))["providers"]["openai-codex"]
+            reloaded = app.AuthStore(str(auth_path)).credentials("openai-codex")[0]
+            self.assertEqual(stored["access_token"], "new-access")
+            self.assertEqual(stored["refresh_token"], "new-refresh")
+            self.assertIs(stored["id_token"], False)
+            self.assertEqual(stored["tokens"], {})
+            self.assertEqual(reloaded["access_token"], "new-access")
+            self.assertIs(reloaded["id_token"], False)
+
+    def test_provider_singleton_refresh_updates_duplicate_token_locations(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "openai-codex": {
+                                "access_token": "root-old",
+                                "refresh_token": "root-refresh",
+                                "tokens": {
+                                    "access_token": "nested-old",
+                                    "refresh_token": "nested-refresh",
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = app.AuthStore(str(auth_path))
+            credential = store.credentials("openai-codex")[0]
+
+            store.update_credential(
+                "openai-codex",
+                credential["id"],
+                {"access_token": "new-access", "refresh_token": "new-refresh"},
+                auth_path=credential["__auth_path"],
+            )
+
+            provider = json.loads(auth_path.read_text(encoding="utf-8"))["providers"]["openai-codex"]
+            self.assertEqual(provider["access_token"], "new-access")
+            self.assertEqual(provider["refresh_token"], "new-refresh")
+            self.assertEqual(provider["tokens"]["access_token"], "new-access")
+            self.assertEqual(provider["tokens"]["refresh_token"], "new-refresh")
+
+    def test_claude_refresh_persists_global_provider_singleton_tokens(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(json.dumps({"credential_pool": {}}), encoding="utf-8")
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "anthropic": {
+                                "auth_mode": "oauth",
+                                "tokens": {
+                                    "access_token": "old-access",
+                                    "refresh_token": "old-refresh",
+                                    "id_token": "old-id-token",
+                                    "expires_at_ms": 1,
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            service = app.UsageService(app.AppConfig(auth_path=str(profile_path)))
+            credential = service.auth.credentials("anthropic")[0]
+            old_http_json = app.http_json
+            try:
+                app.http_json = lambda *args, **kwargs: {
+                    "access_token": "new-access",
+                    "refresh_token": "new-refresh",
+                    "id_token": None,
+                    "expires_in": 3600,
+                }
+                refreshed = service._refresh_claude_if_needed(credential, "dev-auth")
+            finally:
+                app.http_json = old_http_json
+
+            stored = json.loads(global_path.read_text(encoding="utf-8"))
+            provider = stored["providers"]["anthropic"]
+            self.assertEqual(refreshed["access_token"], "new-access")
+            self.assertEqual(provider["tokens"]["access_token"], "new-access")
+            self.assertEqual(provider["tokens"]["refresh_token"], "new-refresh")
+            self.assertIsNone(provider["tokens"]["id_token"])
+            self.assertIsNone(refreshed["id_token"])
+            self.assertGreater(provider["tokens"]["expires_at_ms"], 1)
+            self.assertNotIn("expires_at_ms", provider)
+            self.assertIn("last_refresh", provider)
+            self.assertEqual(json.loads(profile_path.read_text()), {"credential_pool": {}})
+
     def test_minimax_probe_accepts_percent_only_rows(self):
         with tempfile.TemporaryDirectory() as td:
             auth_path = Path(td) / "auth.json"
