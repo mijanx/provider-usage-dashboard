@@ -41,6 +41,78 @@ name: demo
         self.assertNotIn("auth_path", payload)
         self.assertEqual(payload["host"], "127.0.0.1")
 
+    def test_missing_auth_error_does_not_expose_configured_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = str(Path(td) / "private" / "auth.json")
+            service = app.UsageService(
+                app.AppConfig(
+                    auth_path=auth_path,
+                    cache_path=str(Path(td) / "cache.json"),
+                    disabled_providers=frozenset({"openai-codex", "anthropic", "kimi-coding", "xai-oauth", "zai"}),
+                )
+            )
+
+            payload = service.collect_all()
+
+            self.assertNotIn(auth_path, json.dumps(payload))
+            self.assertEqual(payload["providers"][0]["error"], "configured auth file not found")
+
+    def test_existing_auth_without_provider_does_not_expose_configured_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "private" / "auth.json"
+            auth_path.parent.mkdir()
+            auth_path.write_text(json.dumps({"credential_pool": {}}), encoding="utf-8")
+            service = app.UsageService(
+                app.AppConfig(
+                    auth_path=str(auth_path),
+                    cache_path=str(Path(td) / "cache.json"),
+                    disabled_providers=frozenset({"openai-codex", "anthropic", "kimi-coding", "xai-oauth", "zai"}),
+                )
+            )
+
+            payload = service.collect_all()
+
+            self.assertNotIn(str(auth_path), json.dumps(payload))
+            self.assertEqual(payload["providers"][0]["error"], "no credential found for minimax")
+
+    def test_unreadable_auth_shape_does_not_expose_configured_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "private" / "auth.json"
+            auth_path.mkdir(parents=True)
+            service = app.UsageService(
+                app.AppConfig(
+                    auth_path=str(auth_path),
+                    cache_path=str(Path(td) / "cache.json"),
+                    disabled_providers=frozenset({"openai-codex", "anthropic", "kimi-coding", "xai-oauth", "zai"}),
+                )
+            )
+
+            payload = service.collect_all()
+
+            self.assertNotIn(str(auth_path), json.dumps(payload))
+            self.assertEqual(payload["providers"][0]["error"], "configured auth file could not be read")
+
+    def test_unreadable_global_fallback_does_not_expose_its_path(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(json.dumps({"credential_pool": {}}), encoding="utf-8")
+            global_path = hermes_root / "auth.json"
+            global_path.mkdir()
+            service = app.UsageService(
+                app.AppConfig(
+                    auth_path=str(profile_path),
+                    cache_path=str(Path(td) / "cache.json"),
+                    disabled_providers=frozenset({"openai-codex", "anthropic", "kimi-coding", "xai-oauth", "zai"}),
+                )
+            )
+
+            payload = service.collect_all()
+
+            self.assertNotIn(str(global_path), json.dumps(payload))
+            self.assertEqual(payload["providers"][0]["error"], "credential fallback auth file could not be read")
+
     def test_load_config_expands_user_and_env(self):
         with tempfile.TemporaryDirectory() as td:
             old = os.environ.get("PUD_TMP")
@@ -126,6 +198,321 @@ port: 9876
                     os.environ.pop("PUD_TEST_TOKEN", None)
                 else:
                     os.environ["PUD_TEST_TOKEN"] = env_old
+
+    def test_profile_auth_falls_back_to_global_hermes_pool(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(json.dumps({"credential_pool": {}}), encoding="utf-8")
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {
+                                    "id": "global-codex",
+                                    "source": "device_code",
+                                    "access_token": "global-token",
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credentials = app.AuthStore(str(profile_path)).credentials("openai-codex")
+
+            self.assertEqual(len(credentials), 1)
+            self.assertEqual(credentials[0]["access_token"], "global-token")
+            self.assertEqual(credentials[0]["__auth_path"], str(global_path))
+
+    def test_missing_profile_auth_falls_back_to_global_hermes_pool(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            hermes_root.mkdir()
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "minimax": [
+                                {"id": "global-minimax", "source": "env:MINIMAX_API_KEY"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credentials = app.AuthStore(str(profile_path)).credentials("minimax")
+
+            self.assertEqual(len(credentials), 1)
+            self.assertEqual(credentials[0]["id"], "global-minimax")
+            self.assertEqual(credentials[0]["__auth_path"], str(global_path))
+
+    def test_global_env_credential_resolves_from_global_dotenv(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(json.dumps({"credential_pool": {}}), encoding="utf-8")
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "minimax": [
+                                {"id": "global-minimax", "source": "env:PUD_GLOBAL_MINIMAX_TOKEN"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (hermes_root / ".env").write_text("PUD_GLOBAL_MINIMAX_TOKEN=global-dotenv-token\n", encoding="utf-8")
+            previous = os.environ.pop("PUD_GLOBAL_MINIMAX_TOKEN", None)
+            try:
+                service = app.UsageService(app.AppConfig(auth_path=str(profile_path)))
+                credential = service.auth.credentials("minimax")[0]
+                token = service._require_access_token(credential, "minimax")
+            finally:
+                if previous is not None:
+                    os.environ["PUD_GLOBAL_MINIMAX_TOKEN"] = previous
+
+            self.assertEqual(token, "global-dotenv-token")
+            self.assertEqual(credential["__auth_path"], str(global_path))
+
+    def test_global_env_credential_resolves_from_active_profile_dotenv(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(json.dumps({"credential_pool": {}}), encoding="utf-8")
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "minimax": [
+                                {"id": "global-minimax", "source": "env:PUD_PROFILE_MINIMAX_TOKEN"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            profile_path.with_name(".env").write_text(
+                "PUD_PROFILE_MINIMAX_TOKEN=profile-dotenv-token\n",
+                encoding="utf-8",
+            )
+            previous = os.environ.pop("PUD_PROFILE_MINIMAX_TOKEN", None)
+            try:
+                service = app.UsageService(app.AppConfig(auth_path=str(profile_path)))
+                credential = service.auth.credentials("minimax")[0]
+                token = service._require_access_token(credential, "minimax")
+            finally:
+                if previous is not None:
+                    os.environ["PUD_PROFILE_MINIMAX_TOKEN"] = previous
+
+            self.assertEqual(token, "profile-dotenv-token")
+            self.assertEqual(credential["__auth_path"], str(global_path))
+
+    def test_healthy_global_credential_beats_stripped_profile_shell_with_same_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            shell = {"id": "shared-codex", "source": "device_code", "last_status": "ok"}
+            profile_path.write_text(
+                json.dumps({"credential_pool": {"openai-codex": [shell]}}),
+                encoding="utf-8",
+            )
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {
+                                    **shell,
+                                    "access_token": "global-token",
+                                    "refresh_token": "global-refresh",
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credentials = app.AuthStore(str(profile_path)).credentials("openai-codex")
+
+            self.assertEqual(len(credentials), 1)
+            self.assertEqual(credentials[0]["access_token"], "global-token")
+            self.assertEqual(credentials[0]["__auth_path"], str(global_path))
+
+    def test_usable_profile_credentials_keep_authority_over_global_pool(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {"id": "profile", "source": "device_code", "access_token": "profile-token"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {
+                                    "id": "global",
+                                    "source": "device_code",
+                                    "access_token": "global-token",
+                                    "priority": 1,
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credentials = app.AuthStore(str(profile_path)).credentials("openai-codex")
+
+            self.assertEqual([entry["id"] for entry in credentials], ["profile"])
+
+    def test_usable_profile_credentials_ignore_malformed_global_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {"id": "profile", "source": "device_code", "access_token": "profile-token"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (hermes_root / "auth.json").write_text("not-json", encoding="utf-8")
+
+            credentials = app.AuthStore(str(profile_path)).credentials("openai-codex")
+
+            self.assertEqual([entry["id"] for entry in credentials], ["profile"])
+            self.assertEqual(credentials[0]["access_token"], "profile-token")
+
+    def test_unresolved_profile_env_reference_uses_global_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "minimax": [
+                                {"id": "profile", "source": "env:PUD_TEST_MISSING_PROFILE_TOKEN"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "minimax": [
+                                {"id": "global", "source": "api_key", "access_token": "global-token"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            previous = os.environ.pop("PUD_TEST_MISSING_PROFILE_TOKEN", None)
+            try:
+                credentials = app.AuthStore(str(profile_path)).credentials("minimax")
+            finally:
+                if previous is not None:
+                    os.environ["PUD_TEST_MISSING_PROFILE_TOKEN"] = previous
+
+            self.assertEqual(credentials[0]["id"], "global")
+
+    def test_anonymous_credentials_are_not_collapsed(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "minimax": [
+                                {"access_token": "token-a"},
+                                {"access_token": "token-b"},
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credentials = app.AuthStore(str(auth_path)).credentials("minimax")
+
+            self.assertEqual([entry["access_token"] for entry in credentials], ["token-a", "token-b"])
+
+    def test_fallback_credential_updates_its_global_source_store(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(json.dumps({"credential_pool": {}}), encoding="utf-8")
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {"id": "global-codex", "source": "device_code", "access_token": "old"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = app.AuthStore(str(profile_path))
+            credential = store.credentials("openai-codex")[0]
+
+            store.update_credential(
+                "openai-codex",
+                "global-codex",
+                {"access_token": "new"},
+                auth_path=credential["__auth_path"],
+            )
+
+            self.assertEqual(
+                json.loads(global_path.read_text())["credential_pool"]["openai-codex"][0]["access_token"],
+                "new",
+            )
+            self.assertEqual(json.loads(profile_path.read_text()), {"credential_pool": {}})
 
     def test_minimax_probe_accepts_percent_only_rows(self):
         with tempfile.TemporaryDirectory() as td:
