@@ -564,6 +564,48 @@ port: 9876
             self.assertEqual(credentials[0]["access_token"], "global-token")
             self.assertEqual(credentials[0]["__auth_path"], str(global_path))
 
+    def test_expired_opaque_profile_credential_uses_global_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "anthropic": [
+                                {
+                                    "id": "profile",
+                                    "source": "oauth",
+                                    "access_token": "opaque-expired-token",
+                                    "expires_at_ms": 1,
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "anthropic": [
+                                {"id": "global", "source": "oauth", "access_token": "global-token"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credentials = app.AuthStore(str(profile_path)).credentials("anthropic")
+
+            self.assertEqual(credentials[0]["id"], "global")
+            self.assertEqual(credentials[0]["access_token"], "global-token")
+            self.assertEqual(credentials[0]["__auth_path"], str(global_path))
+
     def test_expired_profile_credential_with_refresh_token_keeps_authority(self):
         with tempfile.TemporaryDirectory() as td:
             hermes_root = Path(td) / ".hermes"
@@ -604,6 +646,32 @@ port: 9876
 
             self.assertEqual([entry["id"] for entry in credentials], ["profile"])
             self.assertEqual(credentials[0]["refresh_token"], "profile-refresh")
+
+    def test_global_fallback_uses_trailing_hermes_profile_structure(self):
+        with tempfile.TemporaryDirectory() as td:
+            hermes_root = Path(td) / "profiles" / "alice" / ".hermes"
+            profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+            profile_path.parent.mkdir(parents=True)
+            profile_path.write_text(json.dumps({"credential_pool": {}}), encoding="utf-8")
+            global_path = hermes_root / "auth.json"
+            global_path.write_text(
+                json.dumps(
+                    {
+                        "credential_pool": {
+                            "openai-codex": [
+                                {"id": "global", "source": "oauth", "access_token": "global-token"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            credential = app.AuthStore(str(profile_path)).first_credential("openai-codex")
+
+            self.assertIsNotNone(credential)
+            self.assertEqual(credential["id"], "global")
+            self.assertEqual(credential["__auth_path"], str(global_path))
 
     def test_usable_profile_credentials_ignore_malformed_global_fallback(self):
         with tempfile.TemporaryDirectory() as td:

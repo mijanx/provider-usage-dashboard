@@ -149,16 +149,12 @@ class AuthStore:
 
     def _global_fallback_path(self) -> Path | None:
         """Return Hermes' global auth store for a profile-scoped auth path."""
-        parts = self.path.parts
-        try:
-            profiles_index = parts.index("profiles")
-        except ValueError:
+        profile_dir = self.path.parent
+        profiles_dir = profile_dir.parent
+        hermes_dir = profiles_dir.parent
+        if self.path.name != "auth.json" or profiles_dir.name != "profiles" or hermes_dir.name != ".hermes":
             return None
-        if profiles_index < 1 or parts[profiles_index - 1] != ".hermes":
-            return None
-        if len(parts) != profiles_index + 3 or parts[-1] != "auth.json":
-            return None
-        candidate = Path(*parts[:profiles_index]) / "auth.json"
+        candidate = hermes_dir / "auth.json"
         return candidate if candidate != self.path and candidate.exists() else None
 
 
@@ -212,6 +208,10 @@ class AuthStore:
             return True
         access_token = entry.get("access_token")
         if access_token:
+            expires_at_ms = as_int(entry.get("expires_at_ms"))
+            if expires_at_ms is not None:
+                expires_at = datetime.fromtimestamp(expires_at_ms / 1000, tz=timezone.utc)
+                return expires_at - datetime.now(timezone.utc) > timedelta(minutes=10)
             token_exp = as_int(jwt_claim(access_token, "exp"))
             if token_exp is None:
                 return True
