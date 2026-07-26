@@ -127,37 +127,138 @@ class AuthStore:
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
-            raise ProbeError(f"auth file not found: {self.path}")
-        stat = self.path.stat()
+            raise ProbeError("configured auth file not found")
+        try:
+            stat = self.path.stat()
+        except OSError:
+            raise ProbeError("configured auth file could not be read") from None
         if self._cache is None or self._cache_mtime != stat.st_mtime:
-            self._cache = json.loads(self.path.read_text(encoding="utf-8"))
+            self._cache = self._read_document(self.path, "configured auth file could not be read")
             self._cache_mtime = stat.st_mtime
         return self._cache
 
-    def save(self, data: dict[str, Any]) -> None:
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        self._cache = data
-        self._cache_mtime = self.path.stat().st_mtime
+    @staticmethod
+    def _read_document(path: Path, error_message: str) -> dict[str, Any]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            raise ProbeError(error_message) from None
+        if not isinstance(data, dict):
+            raise ProbeError(error_message)
+        return data
 
-    def credentials(self, provider: str) -> list[dict[str, Any]]:
-        data = self.load()
+    def _global_fallback_path(self) -> Path | None:
+        """Return Hermes' global auth store for a profile-scoped auth path."""
+        profile_dir = self.path.parent
+        profiles_dir = profile_dir.parent
+        hermes_dir = profiles_dir.parent
+        if self.path.name != "auth.json" or profiles_dir.name != "profiles" or hermes_dir.name != ".hermes":
+            return None
+        candidate = hermes_dir / "auth.json"
+        return candidate if candidate != self.path and candidate.exists() else None
+
+
+    def save(self, data: dict[str, Any]) -> None:
+        try:
+            self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            raise ProbeError("configured auth file could not be updated") from None
+        self._cache = data
+        self._cache_mtime = mtime
+
+    def resolve_env_credential(self, credential: dict[str, Any]) -> str | None:
+        """Resolve env-backed credentials in the active profile, then source store."""
+        source = str(credential.get("source") or "")
+        if not source.startswith("env:"):
+            return None
+        env_key = source.split(":", 1)[1].strip()
+        if not env_key:
+            return None
+        token = os.environ.get(env_key)
+        if token:
+            return token
+        source_auth_path = Path(str(credential.get("__auth_path") or self.path))
+        dotenv_paths = [self.path.with_name(".env"), source_auth_path.with_name(".env")]
+        for dotenv_path in dict.fromkeys(dotenv_paths):
+            token = load_env_value(dotenv_path, env_key)
+            if token:
+                return token
+        return None
+
+    def _document_credentials(self, auth_path: Path, data: dict[str, Any], provider: str) -> list[dict[str, Any]]:
         pool = data.get("credential_pool", {}).get(provider)
-        entries = [entry for entry in (pool or []) if isinstance(entry, dict)] if isinstance(pool, list) else []
+        candidates = [entry for entry in (pool or []) if isinstance(entry, dict)] if isinstance(pool, list) else []
 
         # Hermes shared auth can hold a fresher provider singleton while the credential pool
         # still contains an expired/stale slot. The dashboard should not let that stale pool
         # entry poison the whole provider card.
         provider_entry = self._provider_singleton_credential(data, provider)
         if provider_entry:
-            entries.append(provider_entry)
+            candidates.append(provider_entry)
+        prepared: list[dict[str, Any]] = []
+        for raw_entry in candidates:
+            entry = dict(raw_entry)
+            entry["__auth_path"] = str(auth_path)
+            prepared.append(entry)
+        return prepared
+
+    def _has_auth_material(self, provider: str, entry: dict[str, Any]) -> bool:
+        if entry.get("refresh_token") and provider in {"openai-codex", "anthropic"}:
+            return True
+        access_token = entry.get("access_token")
+        if access_token:
+            expires_at_ms = as_int(entry.get("expires_at_ms"))
+            if expires_at_ms is not None:
+                expires_at = datetime.fromtimestamp(expires_at_ms / 1000, tz=timezone.utc)
+                return expires_at - datetime.now(timezone.utc) > timedelta(minutes=10)
+            token_exp = as_int(jwt_claim(access_token, "exp"))
+            if token_exp is None:
+                return True
+            expires_at = datetime.fromtimestamp(token_exp, tz=timezone.utc)
+            return expires_at - datetime.now(timezone.utc) > timedelta(minutes=10)
+        return bool(self.resolve_env_credential(entry))
+
+    def credentials(self, provider: str, *aliases: str) -> list[dict[str, Any]]:
+        providers = (provider, *aliases)
+        profile_exists = self.path.exists()
+        profile_entries = (
+            [
+                (alias_rank, provider_name, entry)
+                for alias_rank, provider_name in enumerate(providers)
+                for entry in self._document_credentials(self.path, self.load(), provider_name)
+            ]
+            if profile_exists
+            else []
+        )
+
+        # This is fallback, not a competing global pool: when the profile has usable
+        # authority, do not even read a malformed or unavailable global auth store.
+        if any(self._has_auth_material(provider_name, entry) for _, provider_name, entry in profile_entries):
+            entries = profile_entries
+        else:
+            fallback_entries: list[tuple[int, str, dict[str, Any]]] = []
+            fallback = self._global_fallback_path()
+            if fallback is not None:
+                fallback_data = self._read_document(fallback, "credential fallback auth file could not be read")
+                fallback_entries = [
+                    (alias_rank, provider_name, entry)
+                    for alias_rank, provider_name in enumerate(providers)
+                    for entry in self._document_credentials(fallback, fallback_data, provider_name)
+                ]
+            if not profile_exists and fallback is None:
+                self.load()  # Preserve the configured-path error when no auth store exists.
+            entries = profile_entries + fallback_entries
         if not entries:
             return []
 
-        def sort_key(entry: dict[str, Any]) -> tuple[int, int, int]:
+        def sort_key(ranked_entry: tuple[int, str, dict[str, Any]]) -> tuple[int, int, int, int, int]:
+            alias_rank, provider_name, entry = ranked_entry
             status = str(entry.get("last_status") or "").lower()
             error_code = as_int(entry.get("last_error_code"))
             error_reason = str(entry.get("last_error_reason") or "").lower()
             priority = as_int(entry.get("priority")) or 9999
+            usable_rank = 0 if self._has_auth_material(provider_name, entry) else 1
             token_exp = as_int(jwt_claim(entry.get("access_token"), "exp"))
             token_is_fresh = token_exp is not None and datetime.fromtimestamp(token_exp, tz=timezone.utc) - datetime.now(timezone.utc) > timedelta(minutes=10)
             token_is_expired = token_exp is not None and not token_is_fresh
@@ -173,9 +274,20 @@ class AuthStore:
                 health_rank = 1
             refresh_hint = parse_iso(entry.get("last_refresh") or entry.get("last_status_at"))
             freshness_rank = -int(refresh_hint.timestamp()) if refresh_hint is not None else 0
-            return health_rank, priority, freshness_rank
+            return usable_rank, alias_rank, health_rank, priority, freshness_rank
 
-        return sorted(entries, key=sort_key)
+        # Rank before deduplicating: stripped profile credential shells may have the
+        # same identity as a healthy global credential. Stable sorting still makes
+        # the profile entry win when both copies have equivalent health/priority.
+        ordered = sorted(entries, key=sort_key)
+        deduplicated: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for _, _, entry in ordered:
+            identity = (str(entry.get("id") or ""), str(entry.get("source") or ""))
+            if identity == ("", "") or identity not in seen:
+                seen.add(identity)
+                deduplicated.append(entry)
+        return deduplicated
 
     def _provider_singleton_credential(self, data: dict[str, Any], provider: str) -> dict[str, Any] | None:
         raw_providers = data.get("providers")
@@ -195,17 +307,63 @@ class AuthStore:
             "priority": -1,
             "access_token": access_token,
             "refresh_token": refresh_token,
-            "id_token": provider_data.get("id_token") or tokens.get("id_token"),
+            "id_token": provider_data["id_token"] if "id_token" in provider_data else tokens.get("id_token"),
+            "expires_at_ms": provider_data.get("expires_at_ms") or tokens.get("expires_at_ms"),
             "last_refresh": provider_data.get("last_refresh"),
             "last_status": "ok" if access_token else None,
         }
 
-    def first_credential(self, provider: str) -> dict[str, Any] | None:
-        ordered = self.credentials(provider)
+    def first_credential(self, provider: str, *aliases: str) -> dict[str, Any] | None:
+        ordered = self.credentials(provider, *aliases)
         return ordered[0] if ordered else None
 
-    def update_credential(self, provider: str, credential_id: str, updates: dict[str, Any]) -> dict[str, Any]:
-        data = self.load()
+    def update_credential(
+        self,
+        provider: str,
+        credential_id: str,
+        updates: dict[str, Any],
+        *,
+        auth_path: str | None = None,
+    ) -> dict[str, Any]:
+        target_path = Path(auth_path) if auth_path else self.path
+        data = self.load() if target_path == self.path else self._read_document(
+            target_path,
+            "credential source auth file could not be read",
+        )
+        if credential_id == f"__provider__:{provider}":
+            providers = data.get("providers")
+            provider_data = providers.get(provider) if isinstance(providers, dict) else None
+            if not isinstance(provider_data, dict):
+                raise ProbeError(f"provider singleton missing for {provider}")
+
+            credential_updates = {
+                key: value
+                for key, value in updates.items()
+                if key in {"access_token", "refresh_token", "id_token", "expires_at_ms"}
+            }
+            metadata_updates = {key: value for key, value in updates.items() if key not in credential_updates}
+            tokens = provider_data.get("tokens")
+            for key, value in credential_updates.items():
+                updated_existing = False
+                if key in provider_data:
+                    provider_data[key] = value
+                    updated_existing = True
+                if isinstance(tokens, dict) and key in tokens:
+                    tokens[key] = value
+                    updated_existing = True
+                if not updated_existing:
+                    if isinstance(tokens, dict):
+                        tokens[key] = value
+                    else:
+                        provider_data[key] = value
+            provider_data.update(metadata_updates)
+            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save_source_document(target_path, data)
+            refreshed = self._provider_singleton_credential(data, provider)
+            if refreshed is None:
+                raise ProbeError(f"provider singleton missing for {provider}")
+            return {**refreshed, "__auth_path": str(target_path)}
+
         pool = data.get("credential_pool", {}).get(provider)
         if not isinstance(pool, list):
             raise ProbeError(f"credential pool missing for {provider}")
@@ -213,9 +371,18 @@ class AuthStore:
             if isinstance(entry, dict) and entry.get("id") == credential_id:
                 entry.update(updates)
                 data["updated_at"] = datetime.now(timezone.utc).isoformat()
-                self.save(data)
-                return entry
+                self._save_source_document(target_path, data)
+                return {**entry, "__auth_path": str(target_path)}
         raise ProbeError(f"credential {credential_id} not found for {provider}")
+
+    def _save_source_document(self, target_path: Path, data: dict[str, Any]) -> None:
+        if target_path == self.path:
+            self.save(data)
+            return
+        try:
+            target_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        except OSError:
+            raise ProbeError("credential source auth file could not be updated") from None
 
 
 class UsageService:
@@ -436,7 +603,7 @@ class UsageService:
         return ProviderResult(provider="minimax", status="ok", source="api", windows=windows)
 
     def probe_zai(self) -> ProviderResult:
-        credential = self.auth.first_credential("custom:zai") or self.auth.first_credential("zai")
+        credential = self.auth.first_credential("custom:zai", "zai")
         if credential is None:
             raise ProbeError("no Z.ai credential found in dev auth.json")
         token = self._require_access_token(credential, "zai")
@@ -513,7 +680,7 @@ class UsageService:
         last_exc: Exception | None = None
         credentials = self.auth.credentials("openai-codex")
         if not credentials:
-            raise ProbeError(f"no credential found for openai-codex in {self.config.auth_path}")
+            raise ProbeError("no credential found for openai-codex")
         for credential in credentials:
             try:
                 credential = self._refresh_codex_if_needed(credential)
@@ -1033,7 +1200,7 @@ class UsageService:
     def _require_credential(self, provider: str) -> dict[str, Any]:
         credential = self.auth.first_credential(provider)
         if credential is None:
-            raise ProbeError(f"no credential found for {provider} in {self.config.auth_path}")
+            raise ProbeError(f"no credential found for {provider}")
         return credential
 
     def _load_claude_credential(self) -> tuple[dict[str, Any], str]:
@@ -1059,12 +1226,9 @@ class UsageService:
         token = credential.get("access_token")
         if token:
             return str(token)
-        source = str(credential.get("source") or "")
-        if source.startswith("env:"):
-            env_key = source.split(":", 1)[1].strip()
-            token = os.environ.get(env_key) or load_env_value(Path(self.config.auth_path).with_name(".env"), env_key)
-            if token:
-                return str(token)
+        token = self.auth.resolve_env_credential(credential)
+        if token:
+            return str(token)
         raise ProbeError(f"credential for {provider} has no access token")
 
     def _refresh_codex_if_needed(self, credential: dict[str, Any]) -> dict[str, Any]:
@@ -1105,16 +1269,19 @@ class UsageService:
         updates = {
             "access_token": access_token,
             "refresh_token": payload.get("refresh_token") or refresh_token,
+            **({"id_token": payload["id_token"]} if "id_token" in payload else {}),
             "last_refresh": iso_now(),
             "last_status": "ok",
             "last_error_code": None,
             "last_error_reason": None,
             "last_error_message": None,
         }
-        if str(credential.get("id") or "").startswith("__provider__:"):
-            credential.update(updates)
-            return credential
-        return self.auth.update_credential("openai-codex", str(credential["id"]), updates)
+        return self.auth.update_credential(
+            "openai-codex",
+            str(credential["id"]),
+            updates,
+            auth_path=credential.get("__auth_path"),
+        )
 
     def _refresh_claude_if_needed(self, credential: dict[str, Any], source: str) -> dict[str, Any]:
         expires_at_ms = as_int(credential.get("expires_at_ms"))
@@ -1147,14 +1314,21 @@ class UsageService:
         updates = {
             "access_token": access_token,
             "refresh_token": payload.get("refresh_token") or refresh_token,
+            **({"id_token": payload["id_token"]} if "id_token" in payload else {}),
             "expires_at_ms": int((time.time() + expires_in) * 1000) if expires_in else credential.get("expires_at_ms"),
+            "last_refresh": iso_now(),
             "last_status": "ok",
             "last_error_code": None,
             "last_error_reason": None,
             "last_error_message": None,
         }
         if source == "dev-auth" and credential.get("id") != "claude-cli":
-            return self.auth.update_credential("anthropic", str(credential["id"]), updates)
+            return self.auth.update_credential(
+                "anthropic",
+                str(credential["id"]),
+                updates,
+                auth_path=credential.get("__auth_path"),
+            )
         credential.update(updates)
         return credential
 
