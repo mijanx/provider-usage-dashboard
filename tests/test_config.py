@@ -647,6 +647,52 @@ port: 9876
             self.assertEqual([entry["id"] for entry in credentials], ["profile"])
             self.assertEqual(credentials[0]["refresh_token"], "profile-refresh")
 
+    def test_refresh_only_unrefreshable_profile_credential_uses_global_fallback(self):
+        for provider in ("xai-oauth", "kimi-coding"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as td:
+                hermes_root = Path(td) / ".hermes"
+                profile_path = hermes_root / "profiles" / "dev" / "auth.json"
+                profile_path.parent.mkdir(parents=True)
+                profile_path.write_text(
+                    json.dumps(
+                        {
+                            "credential_pool": {
+                                provider: [
+                                    {
+                                        "id": "profile",
+                                        "source": "oauth",
+                                        "refresh_token": "unusable-profile-refresh",
+                                    }
+                                ]
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                global_path = hermes_root / "auth.json"
+                global_path.write_text(
+                    json.dumps(
+                        {
+                            "credential_pool": {
+                                provider: [
+                                    {
+                                        "id": "global",
+                                        "source": "oauth",
+                                        "access_token": "global-token",
+                                    }
+                                ]
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                credentials = app.AuthStore(str(profile_path)).credentials(provider)
+
+                self.assertEqual(credentials[0]["id"], "global")
+                self.assertEqual(credentials[0]["access_token"], "global-token")
+                self.assertEqual(credentials[0]["__auth_path"], str(global_path))
+
     def test_global_fallback_uses_trailing_hermes_profile_structure(self):
         with tempfile.TemporaryDirectory() as td:
             hermes_root = Path(td) / "profiles" / "alice" / ".hermes"

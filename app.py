@@ -203,8 +203,8 @@ class AuthStore:
             prepared.append(entry)
         return prepared
 
-    def _has_auth_material(self, entry: dict[str, Any]) -> bool:
-        if entry.get("refresh_token"):
+    def _has_auth_material(self, provider: str, entry: dict[str, Any]) -> bool:
+        if entry.get("refresh_token") and provider in {"openai-codex", "anthropic"}:
             return True
         access_token = entry.get("access_token")
         if access_token:
@@ -224,7 +224,7 @@ class AuthStore:
         profile_exists = self.path.exists()
         profile_entries = (
             [
-                (alias_rank, entry)
+                (alias_rank, provider_name, entry)
                 for alias_rank, provider_name in enumerate(providers)
                 for entry in self._document_credentials(self.path, self.load(), provider_name)
             ]
@@ -234,15 +234,15 @@ class AuthStore:
 
         # This is fallback, not a competing global pool: when the profile has usable
         # authority, do not even read a malformed or unavailable global auth store.
-        if any(self._has_auth_material(entry) for _, entry in profile_entries):
+        if any(self._has_auth_material(provider_name, entry) for _, provider_name, entry in profile_entries):
             entries = profile_entries
         else:
-            fallback_entries: list[tuple[int, dict[str, Any]]] = []
+            fallback_entries: list[tuple[int, str, dict[str, Any]]] = []
             fallback = self._global_fallback_path()
             if fallback is not None:
                 fallback_data = self._read_document(fallback, "credential fallback auth file could not be read")
                 fallback_entries = [
-                    (alias_rank, entry)
+                    (alias_rank, provider_name, entry)
                     for alias_rank, provider_name in enumerate(providers)
                     for entry in self._document_credentials(fallback, fallback_data, provider_name)
                 ]
@@ -252,13 +252,13 @@ class AuthStore:
         if not entries:
             return []
 
-        def sort_key(ranked_entry: tuple[int, dict[str, Any]]) -> tuple[int, int, int, int, int]:
-            alias_rank, entry = ranked_entry
+        def sort_key(ranked_entry: tuple[int, str, dict[str, Any]]) -> tuple[int, int, int, int, int]:
+            alias_rank, provider_name, entry = ranked_entry
             status = str(entry.get("last_status") or "").lower()
             error_code = as_int(entry.get("last_error_code"))
             error_reason = str(entry.get("last_error_reason") or "").lower()
             priority = as_int(entry.get("priority")) or 9999
-            usable_rank = 0 if self._has_auth_material(entry) else 1
+            usable_rank = 0 if self._has_auth_material(provider_name, entry) else 1
             token_exp = as_int(jwt_claim(entry.get("access_token"), "exp"))
             token_is_fresh = token_exp is not None and datetime.fromtimestamp(token_exp, tz=timezone.utc) - datetime.now(timezone.utc) > timedelta(minutes=10)
             token_is_expired = token_exp is not None and not token_is_fresh
@@ -282,7 +282,7 @@ class AuthStore:
         ordered = sorted(entries, key=sort_key)
         deduplicated: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
-        for _, entry in ordered:
+        for _, _, entry in ordered:
             identity = (str(entry.get("id") or ""), str(entry.get("source") or ""))
             if identity == ("", "") or identity not in seen:
                 seen.add(identity)
