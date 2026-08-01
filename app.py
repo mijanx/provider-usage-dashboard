@@ -703,9 +703,9 @@ class UsageService:
                     if used_pct is None:
                         continue
                     window_seconds = as_int(entry.get("limit_window_seconds"))
-                    if window_seconds is not None and 0 < window_seconds <= 8 * 60 * 60:
+                    if window_seconds == 5 * 60 * 60:
                         label = "session"
-                    elif window_seconds is not None and 5 * 24 * 60 * 60 <= window_seconds <= 9 * 24 * 60 * 60:
+                    elif window_seconds == 7 * 24 * 60 * 60:
                         label = "weekly"
                     elif window_seconds is not None:
                         label = f"{round(window_seconds / 3600, 1):g}h"
@@ -1757,7 +1757,11 @@ function weeklyWindowSpan(window) {
   if (!end) return null;
   const endMs = Date.parse(end);
   if (!Number.isFinite(endMs)) return null;
-  const start = meta.window_start ? Date.parse(meta.window_start) : endMs - (7 * 24 * 60 * 60 * 1000);
+  const reportedSpanMs = Number(meta.window_seconds) * 1000;
+  const fallbackSpanMs = Number.isFinite(reportedSpanMs) && reportedSpanMs > 0
+    ? reportedSpanMs
+    : 7 * 24 * 60 * 60 * 1000;
+  const start = meta.window_start ? Date.parse(meta.window_start) : endMs - fallbackSpanMs;
   if (!Number.isFinite(start) || start >= endMs) return null;
   return { start, end: endMs };
 }
@@ -1835,6 +1839,8 @@ function windowExpectedUsed(window) {
     const startMs = Date.parse(meta.window_start);
     if (Number.isFinite(startMs) && startMs < endMs) spanMs = endMs - startMs;
   }
+  const reportedSpanMs = Number(meta.window_seconds) * 1000;
+  if (!spanMs && Number.isFinite(reportedSpanMs) && reportedSpanMs > 0) spanMs = reportedSpanMs;
   const label = String(window.label || '');
   if (!spanMs && label.startsWith('session')) spanMs = 5 * 60 * 60 * 1000;
   if (!spanMs && label.startsWith('weekly')) spanMs = 7 * 24 * 60 * 60 * 1000;
