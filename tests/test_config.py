@@ -2,6 +2,8 @@ import base64
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1167,6 +1169,134 @@ port: 9876
         self.assertEqual(merged[0].percent_used, 80.0)
         self.assertEqual(merged[1].percent_used, 99.0)
 
+    def test_codex_primary_weekly_window_is_not_mislabeled_as_session(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "auth.json"
+            auth_path.write_text(
+                json.dumps({"credential_pool": {"openai-codex": [{"access_token": "token"}]}}),
+                encoding="utf-8",
+            )
+            service = app.UsageService(app.AppConfig(auth_path=str(auth_path)))
+            payload = {
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 75,
+                        "limit_window_seconds": 7 * 24 * 60 * 60,
+                        "reset_after_seconds": 5 * 24 * 60 * 60,
+                    },
+                    "secondary_window": None,
+                },
+            }
+            old_http = app.http_json_with_headers
+            try:
+                app.http_json_with_headers = lambda *args, **kwargs: (payload, {})
+                result = service.probe_codex()
+            finally:
+                app.http_json_with_headers = old_http
+
+            self.assertEqual([window.label for window in result.windows], ["weekly"])
+            self.assertEqual(result.windows[0].percent_used, 75.0)
+            self.assertEqual(result.windows[0].meta["window_seconds"], 604800)
+
+    def test_codex_legacy_session_and_weekly_windows_keep_semantic_labels(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "auth.json"
+            auth_path.write_text(
+                json.dumps({"credential_pool": {"openai-codex": [{"access_token": "token"}]}}),
+                encoding="utf-8",
+            )
+            service = app.UsageService(app.AppConfig(auth_path=str(auth_path)))
+            payload = {
+                "rate_limit": {
+                    "primary_window": {"used_percent": 10, "limit_window_seconds": 5 * 60 * 60},
+                    "secondary_window": {"used_percent": 20, "limit_window_seconds": 7 * 24 * 60 * 60},
+                },
+            }
+            old_http = app.http_json_with_headers
+            try:
+                app.http_json_with_headers = lambda *args, **kwargs: (payload, {})
+                result = service.probe_codex()
+            finally:
+                app.http_json_with_headers = old_http
+
+            self.assertEqual([window.label for window in result.windows], ["session", "weekly"])
+
+    def test_codex_nonstandard_durations_keep_reported_window_semantics(self):
+        with tempfile.TemporaryDirectory() as td:
+            auth_path = Path(td) / "auth.json"
+            auth_path.write_text(
+                json.dumps({"credential_pool": {"openai-codex": [{"access_token": "token"}]}}),
+                encoding="utf-8",
+            )
+            service = app.UsageService(app.AppConfig(auth_path=str(auth_path)))
+            payload = {
+                "rate_limit": {
+                    "primary_window": {"used_percent": 10, "limit_window_seconds": 8 * 60 * 60},
+                    "secondary_window": {"used_percent": 20, "limit_window_seconds": 5 * 24 * 60 * 60},
+                },
+            }
+            old_http = app.http_json_with_headers
+            try:
+                app.http_json_with_headers = lambda *args, **kwargs: (payload, {})
+                result = service.probe_codex()
+            finally:
+                app.http_json_with_headers = old_http
+
+            self.assertEqual([window.label for window in result.windows], ["8h", "120h"])
+            self.assertEqual(
+                [window.meta["window_seconds"] for window in result.windows],
+                [8 * 60 * 60, 5 * 24 * 60 * 60],
+            )
+
+    def test_weekly_only_codex_and_xai_show_no_5h_quota_without_empty_graph(self):
+        self.assertIn("const weeklyOnlyQuota =", app.HTML)
+        self.assertIn("['openai-codex', 'xai-oauth'].includes(provider.provider)", app.HTML)
+        self.assertIn("No 5h quota", app.HTML)
+        self.assertIn("noWindowMessage", app.HTML)
+        self.assertIn("${noWindowMessage ? '' : `<div class=\"pacebar", app.HTML)
+
+    @unittest.skipUnless(shutil.which("node"), "node is required for embedded renderer behavior")
+    def test_weekly_only_renderer_behavior_keeps_weekly_pace_and_hides_5h_graph(self):
+        script = app.HTML.split("<script>", 1)[1].split("async function load()", 1)[0]
+        probe = r"""
+const unavailable = renderPrimaryCell({}, null, '5h window', null, 'No 5h quota');
+if (!unavailable.includes('<span class="pcell__values">No 5h quota</span>') || unavailable.includes('pacebar')) {
+  throw new Error('no-5h cell must visibly explain the missing quota without a graph');
+}
+const customEnd = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
+const customMarker = windowExpectedUsed({
+  label: '8h', reset_at: customEnd, meta: {window_seconds: 8 * 60 * 60}
+});
+if (customMarker < 49 || customMarker > 51) {
+  throw new Error(`reported custom duration was ignored: ${customMarker}`);
+}
+for (const providerId of ['openai-codex', 'xai-oauth']) {
+  const rendered = renderProvider({
+    provider: providerId,
+    status: 'ok',
+    source: 'test',
+    windows: [{
+      label: 'weekly', percent_used: 25, percent_remaining: 75,
+      reset_at: new Date(Date.now() + 4 * 86400000).toISOString(), meta: {}
+    }]
+  });
+  if (!rendered.includes('No 5h quota')) throw new Error(`${providerId} missing no-5h explanation`);
+  if (!rendered.includes('pacebar__marker') || !rendered.includes('pace marker = even-burn target')) {
+    throw new Error(`${providerId} weekly pace marker missing`);
+  }
+}
+"""
+        node = shutil.which("node")
+        self.assertIsNotNone(node)
+        completed = subprocess.run(
+            [str(node), "-e", script + probe],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
     def test_primary_cells_lead_with_used_percent_not_remaining_percent(self):
         self.assertIn(
             '<span class="pct ${cls.pct}">${pct(window.percent_used)} used</span>',
@@ -1184,11 +1314,11 @@ port: 9876
 
     def test_weekly_provider_keeps_non_display_fallback_in_session_cell(self):
         self.assertIn(
-            "const sessionWindow = windowByLabel(provider, 'session') || fallbackPrimaries.shift() || null;",
+            "const sessionWindow = explicitSessionWindow || (weeklyOnlyQuota ? null : fallbackPrimaries.shift()) || null;",
             app.HTML,
         )
-        self.assertNotIn(
-            "windowByLabel(provider, 'session') || (weeklyWindow ? null : fallbackPrimaries.shift())",
+        self.assertIn(
+            "const weeklyOnlyQuota = Boolean(weeklyWindow && !explicitSessionWindow",
             app.HTML,
         )
 
