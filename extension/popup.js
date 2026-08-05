@@ -48,7 +48,7 @@ function windowNode(window) {
 
   const reset = document.createElement('div');
   reset.className = 'reset';
-  reset.textContent = window.reset_text ? `Resets ${window.reset_text}` : '';
+  reset.textContent = resetText(window);
   row.append(heading, meter, reset);
   return row;
 }
@@ -72,8 +72,8 @@ function providerNode(provider) {
   heading.append(nameWrap, badge);
   card.append(heading);
 
-  const windows = (provider.windows || []).filter(item => item && typeof item === 'object');
-  if (windows.length) windows.slice(0, 3).forEach(item => card.append(windowNode(item)));
+  const windows = selectUsageWindows(provider.windows);
+  if (windows.length) windows.forEach(item => card.append(windowNode(item)));
   else {
     const empty = document.createElement('p');
     empty.className = 'empty';

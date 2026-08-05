@@ -25,6 +25,27 @@ function usageUrl(endpoint) {
   return `${endpoint}/api/usage`;
 }
 
+function selectUsageWindows(windows, limit = 3) {
+  const valid = Array.isArray(windows)
+    ? windows.filter(item => item && typeof item === 'object')
+    : [];
+  const selected = [];
+
+  for (const preferredLabel of ['session', 'weekly']) {
+    const preferred = valid.find(item => String(item.label || '').toLowerCase() === preferredLabel);
+    if (preferred && !selected.includes(preferred)) selected.push(preferred);
+  }
+  for (const item of valid) {
+    if (selected.length >= limit) break;
+    if (!selected.includes(item)) selected.push(item);
+  }
+  return selected.slice(0, limit);
+}
+
+function resetText(window) {
+  return window && window.reset_text ? String(window.reset_text) : '';
+}
+
 async function storedEndpoint() {
   const stored = await chrome.storage.sync.get({ endpoint: DEFAULT_ENDPOINT });
   return normalizeEndpoint(stored.endpoint);
@@ -42,8 +63,7 @@ async function fetchUsage(endpoint) {
   const response = await fetch(usageUrl(endpoint), {
     method: 'GET',
     headers: { Accept: 'application/json' },
-    cache: 'no-store',
-    signal: AbortSignal.timeout(20000)
+    cache: 'no-store'
   });
   if (!response.ok) throw new Error(`Dashboard returned HTTP ${response.status}`);
   const data = await response.json();
@@ -51,4 +71,8 @@ async function fetchUsage(endpoint) {
     throw new Error('Endpoint returned an unexpected payload');
   }
   return data;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { fetchUsage, resetText, selectUsageWindows };
 }
