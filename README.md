@@ -99,6 +99,20 @@ The default auth source assumes a Hermes-style `auth.json` with `credential_pool
 | `/api/usage` | Normalized usage JSON. No credential values or credential file paths are returned. |
 | `/health` | Basic health response. |
 
+## Chrome / Edge extension
+
+The repository includes an unpacked Manifest V3 extension in [`extension/`](extension/). It renders the normalized `/api/usage` payload in a compact browser popup and can connect to a dashboard on localhost, a trusted LAN, or a VPN.
+
+1. Start the Python dashboard on the machine that owns the provider credentials. For another machine on your trusted LAN, bind explicitly with `python app.py --config config.yaml --host 0.0.0.0` and allow TCP port `8768` only on the appropriate private firewall profile.
+2. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
+3. Enable **Developer mode**, choose **Load unpacked**, and select this repository's `extension` directory.
+4. Open the extension. The default endpoint is `http://127.0.0.1:8768`; use **Settings** to enter another base URL such as `http://192.168.1.20:8768`.
+5. Choose **Grant access** or **Save and connect**. The extension requests access only to that endpoint's origin at runtime.
+
+No credential is copied into the extension. It stores only the endpoint URL in browser sync storage and reads `/api/usage`. Remote host access is declared as an optional permission rather than an install-time permission. If you move the dashboard to a different origin, grant the new origin from Settings.
+
+Do not forward the dashboard port to the public internet. The API excludes tokens and credential paths, but it can include account email, plan, and quota metadata.
+
 ## Security model
 
 This is localhost/trusted-LAN tooling.

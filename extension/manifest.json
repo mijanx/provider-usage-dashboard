@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Provider Usage Dashboard",
+  "version": "1.0.0",
+  "description": "View provider quota and usage data from a trusted Provider Usage Dashboard endpoint.",
+  "permissions": ["storage"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "action": {
+    "default_title": "Provider Usage Dashboard",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html"
+}

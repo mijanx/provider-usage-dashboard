@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Provider Usage Dashboard settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Provider Usage Dashboard</div>
+    <h1>Extension settings</h1>
+    <p class="intro">Connect the extension to a dashboard running on localhost, a trusted LAN, or a VPN. The extension reads <code>/api/usage</code>; credentials remain on the dashboard host.</p>
+
+    <form id="settingsForm">
+      <label for="endpoint">Dashboard endpoint</label>
+      <input id="endpoint" name="endpoint" type="url" inputmode="url" required placeholder="http://127.0.0.1:8768" spellcheck="false">
+      <p class="hint">Enter the base URL only. HTTP is allowed for localhost and trusted private networks.</p>
+      <div class="actions">
+        <button class="primary" type="submit">Save and connect</button>
+        <button id="test" type="button">Test connection</button>
+      </div>
+    </form>
+
+    <div id="result" class="result" aria-live="polite"></div>
+
+    <aside>
+      <strong>Security note</strong>
+      <p>Only grant access to an endpoint you trust. The API omits credential values, but provider responses can include account email and plan metadata. Do not expose the Python server to the public internet.</p>
+    </aside>
+  </main>
+  <script src="shared.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
