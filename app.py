@@ -2320,7 +2320,7 @@ def summarize_zai_model_usage(payload: dict[str, Any]) -> Window | None:
 
 
 def expand_path(value: str) -> str:
-    return os.path.expandvars(os.path.expanduser(value))
+    return os.path.normpath(os.path.expandvars(os.path.expanduser(value)))
 
 
 def load_env_value(path: Path, key: str) -> str | None:

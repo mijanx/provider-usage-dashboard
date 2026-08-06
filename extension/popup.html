@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Provider Usage Dashboard</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <div>
+      <div class="eyebrow">Provider usage</div>
+      <h1>Quota dashboard</h1>
+    </div>
+    <button id="refresh" class="icon-button" type="button" title="Refresh" aria-label="Refresh">↻</button>
+  </header>
+
+  <section id="status" class="status" aria-live="polite">Loading…</section>
+  <section id="summary" class="summary" hidden></section>
+  <main id="providers" class="providers"></main>
+
+  <section id="setup" class="setup" hidden>
+    <h2>Connect an endpoint</h2>
+    <p id="setupMessage"></p>
+    <div class="actions">
+      <button id="grant" class="primary" type="button">Grant access</button>
+      <button id="options" type="button">Settings</button>
+    </div>
+  </section>
+
+  <footer>
+    <button id="dashboard" class="link-button" type="button">Open dashboard</button>
+    <span aria-hidden="true">·</span>
+    <button id="settings" class="link-button" type="button">Settings</button>
+  </footer>
+  <script src="shared.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
