@@ -6,7 +6,7 @@ on:
 
 jobs:
   test:
-    runs-on: [self-hosted, Linux, X64, net-github-runner]
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'net-github-runner' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
