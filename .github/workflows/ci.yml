@@ -1,12 +1,17 @@
 name: CI
 
+# Local runner only, trusted pushes only (no pull_request trigger: this repo is
+# public, so PR code must never reach the persistent runner).
 on:
   push:
-  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'net-github-runner' }}
+    runs-on: [self-hosted, Linux, X64, jan-lxc]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

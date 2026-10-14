@@ -14,7 +14,7 @@ The project is public, but the running dashboard is intentionally **not** a publ
 - **Default bind:** `127.0.0.1:8768`.
 - **LAN access:** opt-in with `--host 0.0.0.0` or `host: 0.0.0.0` in a private config.
 - **Credential model:** reads local credential files; does not require credentials to be committed.
-- **CI:** GitHub Actions `test` job runs on a self-hosted Linux runner labeled `net-github-runner`.
+- **CI:** GitHub Actions `test` job requires a runner with all four labels: `self-hosted`, `Linux`, `X64`, and `jan-lxc`. Apply the `jan-lxc` custom label when provisioning or replacing the runner.
 - **Main branch policy:** changes to `main` require a PR and a passing `test` check; direct pushes, deletion, and non-fast-forward updates are blocked by a GitHub ruleset.
 
 ## What it shows
